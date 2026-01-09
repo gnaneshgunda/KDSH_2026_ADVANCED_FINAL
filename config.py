@@ -1,5 +1,5 @@
 """
-Configuration and setup module for Advanced Narrative Consistency RAG
+Configuration for LangGraph-based Advanced Narrative Consistency RAG
 """
 
 import os
@@ -19,12 +19,20 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
-# API Configuration
-NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
-NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
+from api_key_manager import get_next_api_key
 
-if not NVIDIA_API_KEY:
-    raise ValueError("NVIDIA_API_KEY not found in .env")
+# Model Configuration - LangChain NVIDIA Endpoints
+EMBEDDING_CONFIG = {
+    "model": "nvidia/llama-3.2-nv-embedqa-1b-v2",
+    "truncate": "NONE"
+}
+
+CHAT_CONFIG = {
+    "model": "moonshotai/kimi-k2-instruct-0905",
+    "temperature": 0.6,
+    "top_p": 0.9,
+    "max_tokens": 4096
+}
 
 # NLP Model Configuration
 def setup_nltk():
@@ -36,7 +44,6 @@ def setup_nltk():
             nltk.download(resource, quiet=True)
     logger.info("NLTK resources ready")
 
-
 def load_spacy_model():
     """Load spaCy model with fallback"""
     try:
@@ -47,21 +54,18 @@ def load_spacy_model():
     logger.info("spaCy model loaded")
     return nlp
 
-
 # Initialize models
 setup_nltk()
 nlp = load_spacy_model()
 
 # Path Configuration
-DEFAULT_BOOKS_DIR = Path("./books")
-DEFAULT_CSV_PATH = Path("train.csv")
-DEFAULT_INDEX_PATH = Path("advanced_index.pkl")
-DEFAULT_OUTPUT_FILE = "results_advanced.csv"
+DB_BOOKS_DIR = Path("./db/books")
+DB_CSV_PATH = Path("./db/train.csv")
+DEFAULT_INDEX_PATH = Path("langgraph_index.pkl")
+DEFAULT_OUTPUT_FILE = "results_langgraph.csv"
 
-# Model Configuration
-EMBEDDING_DIM = 1024
-EMBEDDING_MODEL = "nvidia/nv-embed-qa"
-CHAT_MODEL = "meta/llama-3.1-8b-instruct"
+# Embedding Configuration
+EMBEDDING_DIM = 2048  # llama-3.2-nv-embedqa-1b-v2 dimension
 
 # Chunking Configuration
 DEFAULT_CHUNK_SIZE = 200
@@ -75,4 +79,8 @@ MULTI_HOP_DEPTH = 2
 MAX_SUPPORTING_CHUNKS = 5
 MAX_OPPOSING_CHUNKS = 5
 
-logger.info(f"Configuration loaded | NVIDIA NIM: {NVIDIA_BASE_URL}")
+# LangGraph Configuration
+MAX_ITERATIONS = 10
+RECURSION_LIMIT = 25
+
+logger.info(f"LangGraph Configuration loaded | Embedding: {EMBEDDING_CONFIG['model']}")
