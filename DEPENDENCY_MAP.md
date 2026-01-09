@@ -1,4 +1,4 @@
-# Module Dependency Map
+.\venv\Scripts\Activate.ps1# Module Dependency Map
 
 ## Dependency Hierarchy
 
