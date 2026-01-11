@@ -34,7 +34,7 @@ from context_builder import ContextVectorBuilder
 from index_manager import IndexManager
 from models import ConsistencyAnalysis, ChunkMetadata
 from claim_extractor import ClaimExtractor
-from claim_verifier import ClaimVerifier
+from retriever import HybridRetriever # Using the new hybrid retriever
 
 
 logger = logging.getLogger(__name__)
@@ -427,75 +427,87 @@ class AdvancedNarrativeConsistencyRAG:
         }
 
 
-    def _determine_verdict(self, character: str, 
-                          claim_results: List[Dict]) -> Tuple[str, float, str]:
+    def _determine_verdict(self, character: str,claim_results: List[Dict]) -> Tuple[str, float, str]:
         """
-        Determine overall verdict based on claim verification results.
-        
-        CRITICAL LOGIC:
-        - Only CONTRADICTED claims prove inconsistency
-        - NOT_MENTIONED claims are neutral (no contradiction)
-        - Default: if no contradictions found → consistent
-        
-        Args:
-            character: Character name (for logging)
-            claim_results: List of claim verification results
-            
-        Returns:
-            Tuple of (verdict, confidence, rationale)
-            verdict: "consistent" | "contradicted" | "unknown"
+         Determine overall verdict based on claim verification results.
+
+    LOGIC PRINCIPLES:
+    - CONTRADICTED claims prove inconsistency
+    - NOT_MENTIONED claims are neutral but weaken confidence
+    - Too many NOT_MENTIONED → insufficient evidence → UNKNOWN
         """
+
         if not claim_results:
             return "unknown", 0.5, "No claims to analyze"
 
-
-        # Count verdict types
+    # Count verdict types
         supported_count = sum(1 for r in claim_results if r["verdict"].lower() == "supported")
         contradicted_count = sum(1 for r in claim_results if r["verdict"].lower() == "contradicted")
         not_mentioned_count = sum(1 for r in claim_results if r["verdict"].lower() == "not_mentioned")
         unknown_count = sum(1 for r in claim_results if r["verdict"].lower() == "unknown")
-        
+
         total_claims = len(claim_results)
+        not_mentioned_ratio = not_mentioned_count / total_claims
 
+        logger.info(
+        f"  Claim summary: {supported_count} supported, "
+        f"{contradicted_count} contradicted, "
+        f"{not_mentioned_count} not mentioned, "
+        f"{unknown_count} unknown"
+    )
 
-        logger.info(f"  Claim summary: {supported_count} supported, {contradicted_count} contradicted, "
-                   f"{not_mentioned_count} not mentioned, {unknown_count} unknown")
+    # ===== FINAL VERDICT LOGIC =====
 
-
-        # ===== FIXED LOGIC =====
-        # Only CONTRADICTED claims count as inconsistency
-        # NOT_MENTIONED is neutral (doesn't prove backstory wrong)
-
-
+    # 1️⃣ Any contradiction → contradicted
         if contradicted_count > 0:
-            # ANY contradiction found → backstory is contradicted
             verdict = "contradicted"
-            confidence = min(0.95, 0.5 + (contradicted_count / total_claims * 0.45))
-            rationale = (f"Backstory contradicts narrative. "
-                        f"Found {contradicted_count} contradicting claim(s) out of {total_claims}. "
-                        f"({supported_count} supported, {not_mentioned_count} not mentioned)")
+            confidence = min(
+            0.95,
+            0.55 + (contradicted_count / total_claims) * 0.45
+        )
+            rationale = (
+            f"Backstory contradicts narrative. "
+            f"Found {contradicted_count} contradicting claim(s) out of {total_claims}. "
+            f"({supported_count} supported, {not_mentioned_count} not mentioned)"
+        )
             logger.info(f"  Overall verdict: CONTRADICTED (confidence: {confidence:.2f})")
 
-
+    # 2️⃣ All claims supported → consistent
         elif supported_count == total_claims:
-            # ALL claims supported → backstory is fully consistent
             verdict = "consistent"
             confidence = 0.95
-            rationale = (f"Backstory is consistent with narrative. "
-                        f"All {supported_count} claims are supported by the narrative.")
+            rationale = (
+            f"Backstory is fully consistent with narrative. "
+            f"All {supported_count} claims are supported."
+        )
             logger.info(f"  Overall verdict: CONSISTENT (confidence: {confidence:.2f})")
 
+    # 3️⃣ Too much missing evidence → unknown
+        elif not_mentioned_ratio >= 0.6:
+            verdict = "unknown"
+            confidence = max(0.40, 0.55 - not_mentioned_ratio * 0.15)
+            rationale = (
+            f"Insufficient narrative evidence to verify backstory. "
+            f"{supported_count} claims supported, "
+            f"{not_mentioned_count} not mentioned, "
+            f"{contradicted_count} contradicted."
+        )
+            logger.info(f"  Overall verdict: UNKNOWN (confidence: {confidence:.2f})")
 
+    # 4️⃣ Mixed but no contradictions → consistent (low confidence)
         else:
-            # Mixed: some supported, some not mentioned, no contradictions
-            # → assume consistent (no evidence of inconsistency)
             verdict = "consistent"
-            confidence = max(0.50, 0.70 - (not_mentioned_count / total_claims * 0.20))
-            rationale = (f"Backstory appears consistent with narrative. "
-                        f"{supported_count} claims supported, {not_mentioned_count} not mentioned "
-                        f"(no contradictions found).")
+            confidence = max(
+            0.55,
+            0.80 - not_mentioned_ratio * 0.30
+        )
+            rationale = (
+            f"Backstory appears consistent with narrative. "
+            f"{supported_count} claims supported, "
+            f"{not_mentioned_count} not mentioned "
+            f"(no contradictions found)."
+        )
             logger.info(f"  Overall verdict: CONSISTENT (confidence: {confidence:.2f})")
-
 
         return verdict, confidence, rationale
 

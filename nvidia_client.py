@@ -1,10 +1,7 @@
 """
 NVIDIA NIM + HuggingFace Client for embeddings, chat, and reranking
 Uses real NVIDIA API when available, falls back to HuggingFace Transformers
-
-FIXED: Correct base URL (v2) to match endpoints (/openai/embeddings, /chat/completions)
 """
-
 
 from typing import List, Dict
 import hashlib
@@ -14,9 +11,7 @@ import requests
 from config import EMBEDDING_DIM
 import logging
 
-
 logger = logging.getLogger(__name__)
-
 
 # Try to import HuggingFace models for fallback
 try:
@@ -28,7 +23,6 @@ except ImportError:
     HAS_SENTENCE_TRANSFORMERS = False
     logger.warning("SentenceTransformer not installed. Install with: pip install sentence-transformers")
 
-
 try:
     from transformers import pipeline
     HAS_HF_PIPELINE = True
@@ -39,11 +33,9 @@ except ImportError:
     logger.warning("Transformers not installed. Install with: pip install transformers")
 
 
-
 def _text_to_seed(text: str) -> int:
     h = hashlib.sha256(text.encode("utf-8")).hexdigest()
     return int(h[:16], 16) % (2 ** 31)
-
 
 
 def _embed_text_hf(text: str) -> np.ndarray:
@@ -61,7 +53,6 @@ def _embed_text_hf(text: str) -> np.ndarray:
         return vec / norm
 
 
-
 class NVIDIAClient:
     """Multi-backend client for embeddings, chat, and reranking.
     
@@ -72,11 +63,9 @@ class NVIDIAClient:
     - rerank(query, candidates) -> list[dict]
     """
 
-
     def __init__(self, api_key: str = None, base_url: str = None):
         self.api_key = api_key
-        # FIXED: Use v2 API with openai-compatible endpoints
-        self.base_url = base_url or "https://api.nvcf.nvidia.com/v2"
+        self.base_url = base_url or "https://integrate.api.nvidia.com/v1"
         self.use_nvidia_api = bool(api_key)
         self.use_hf = not self.use_nvidia_api and HAS_SENTENCE_TRANSFORMERS
         
@@ -86,7 +75,6 @@ class NVIDIAClient:
             logger.info("Using HuggingFace models for inference (embeddings)")
         else:
             logger.info("Using stub/deterministic fallback for inference")
-
 
     def embed(self, texts: List[str]) -> List[np.ndarray]:
         """Get embeddings using NVIDIA API > HuggingFace > Stub"""
@@ -105,7 +93,7 @@ class NVIDIAClient:
             payload = {"input": [t if t is not None else "" for t in texts]}
             
             response = requests.post(
-                f"{self.base_url}/openai/embeddings",
+                f"{self.base_url}/embeddings",
                 headers=headers,
                 json=payload,
                 timeout=30
@@ -123,7 +111,6 @@ class NVIDIAClient:
         except Exception as e:
             logger.warning(f"NVIDIA embedding failed: {e}. Falling back to HuggingFace.")
             return [_embed_text_hf(t if t is not None else "") for t in texts]
-
 
     def chat(self, messages, temperature: float = 0.0) -> str:
         """Get chat response: NVIDIA API > Stub heuristic"""
@@ -177,7 +164,6 @@ class NVIDIAClient:
         else:
             prompt = str(messages)
 
-
         # If prompt expects JSON (heuristic: contains 'Return JSON') reply with a simple JSON
         if "Return JSON" in prompt or "Return JSON:" in prompt:
             # Improved heuristic: analyze supporting vs opposing evidence more granularly
@@ -212,17 +198,14 @@ class NVIDIAClient:
                 "reasoning": reasoning
             })
 
-
         # If prompt asks to "Return ONLY the opposite statement" (used in negation)
         if "Return ONLY the opposite statement" in prompt:
             first_line = prompt.splitlines()[0]
             snippet = first_line[:200]
             return f"Not {snippet}"
 
-
         # Default: return the prompt truncated for visibility
         return prompt[:1000]
-
 
     def rerank(self, query: str, candidates: List[Dict]) -> List[Dict]:
         """Rerank candidates: NVIDIA API > HF embeddings > Stub"""
