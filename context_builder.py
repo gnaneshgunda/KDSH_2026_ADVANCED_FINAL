@@ -1,65 +1,110 @@
 """
-Context vector building module for temporal, emotional, and causal information
+Context vector builder for temporal, emotional, and causal information
 """
 
 import logging
 from typing import List
 import numpy as np
-from config import nlp, EMBEDDING_DIM
 
 logger = logging.getLogger(__name__)
 
 
 class ContextVectorBuilder:
-    """Build rich context vectors combining semantic embeddings with contextual signals"""
+    """
+    Build context vectors enriching semantic embeddings with:
+    - Sentiment analysis
+    - Temporal marker extraction
+    - Causal indicator extraction
+    """
 
-    def __init__(self, embedding_dim: int = EMBEDDING_DIM):
+    def __init__(self, embedding_dim: int = 384):
+        """
+        Initialize ContextVectorBuilder.
+        
+        Args:
+            embedding_dim: Dimension of semantic embeddings
+        """
         self.embedding_dim = embedding_dim
         
+        # Temporal keywords
         self.temporal_keywords = {
-            "past": ["ago", "previously", "before", "then", "once", "years earlier"],
-            "present": ["now", "currently", "today", "these days", "at present"],
-            "future": ["will", "shall", "going to", "later", "tomorrow", "ahead"]
+            "past": [
+                "was", "were", "had", "did", "ago", "before", "previously",
+                "once", "earlier", "formerly", "back then", "in the past"
+            ],
+            "present": [
+                "is", "are", "has", "have", "does", "do", "now", "currently",
+                "these days", "at present", "right now"
+            ],
+            "future": [
+                "will", "would", "shall", "going to", "going", "plan", "expect",
+                "tomorrow", "later", "soon", "eventually", "in the future"
+            ]
         }
         
-        self.emotional_keywords = {
-            "positive": ["happy", "joy", "love", "admire", "proud", "grateful"],
-            "negative": ["sad", "hate", "angry", "afraid", "ashamed", "bitter"],
-            "neutral": ["think", "know", "understand", "realize", "discover"]
-        }
-        
+        # Causal indicators
         self.causal_keywords = [
-            "because", "cause", "due to", "lead to", "result", "if", "then", "therefore"
+            "because", "since", "as", "caused", "caused by", "due to",
+            "result in", "results in", "led to", "lead to", "therefore",
+            "thus", "hence", "consequently", "as a result", "so that",
+            "effect", "impact", "influence"
         ]
         
-        logger.info("ContextVectorBuilder initialized")
+        # Sentiment words
+        self.positive_words = {
+            "happy", "good", "great", "excellent", "wonderful", "beautiful",
+            "love", "enjoy", "proud", "successful", "amazing", "brilliant",
+            "delighted", "grateful", "hopeful", "peaceful", "strong", "brave"
+        }
+        
+        self.negative_words = {
+            "sad", "bad", "terrible", "awful", "horrible", "ugly",
+            "hate", "fear", "ashamed", "failed", "tragic", "broken",
+            "devastated", "angry", "hopeless", "weak", "afraid", "lost"
+        }
+        
+        logger.info(f"ContextVectorBuilder initialized (embedding_dim={embedding_dim})")
+
+    def build_context_vector(self, text: str, embedding: np.ndarray) -> np.ndarray:
+        """
+        Build enriched context vector combining semantic and contextual signals.
+        
+        Args:
+            text: Text content
+            embedding: Semantic embedding (numpy array)
+            
+        Returns:
+            Context vector (enriched embedding)
+        """
+        # For now, return embedding as-is. Can be extended to concatenate
+        # contextual features as additional dimensions.
+        return embedding
 
     def analyze_sentiment(self, text: str) -> float:
         """
-        Analyze sentiment polarity of text
+        Analyze sentiment of text.
         
         Args:
             text: Input text
             
         Returns:
-            Sentiment score from -1.0 (negative) to 1.0 (positive)
+            Sentiment score (-1.0 to 1.0)
         """
-        doc = nlp(text)
-        pos_score = sum(
-            1 for token in doc 
-            if token.text.lower() in self.emotional_keywords["positive"]
-        )
-        neg_score = sum(
-            1 for token in doc 
-            if token.text.lower() in self.emotional_keywords["negative"]
-        )
-        total = pos_score + neg_score
-        sentiment = (pos_score - neg_score) / max(total, 1)
-        return float(sentiment)
+        text_lower = text.lower()
+        
+        positive_count = sum(1 for word in self.positive_words if word in text_lower)
+        negative_count = sum(1 for word in self.negative_words if word in text_lower)
+        
+        total = positive_count + negative_count
+        if total == 0:
+            return 0.0
+        
+        score = (positive_count - negative_count) / total
+        return float(np.clip(score, -1.0, 1.0))
 
     def extract_temporal_markers(self, text: str) -> List[str]:
         """
-        Extract temporal indicators from text
+        Extract temporal markers (past, present, future references).
         
         Args:
             text: Input text
@@ -69,63 +114,48 @@ class ContextVectorBuilder:
         """
         markers = []
         text_lower = text.lower()
-        for tense, keywords in self.temporal_keywords.items():
-            if any(kw in text_lower for kw in keywords):
-                markers.append(tense)
-        return markers
+        
+        for time_type, keywords in self.temporal_keywords.items():
+            for kw in keywords:
+                if kw in text_lower:
+                    markers.append(time_type)
+                    break
+        
+        return list(set(markers))  # Remove duplicates
 
     def extract_causal_indicators(self, text: str) -> List[str]:
         """
-        Extract causal relationships and indicators
+        Extract causal relationships and indicators.
         
         Args:
             text: Input text
             
         Returns:
-            List of causal indicators
+            List of causal indicators found
         """
-        doc = nlp(text)
         indicators = []
-        for token in doc:
-            if token.text.lower() in self.causal_keywords:
-                # Extract dependent clauses
-                for child in token.children:
-                    indicators.append(child.text)
-        return indicators[:3]  # Top 3
+        text_lower = text.lower()
+        
+        for keyword in self.causal_keywords:
+            if keyword in text_lower:
+                indicators.append(keyword)
+        
+        return indicators[:5]  # Return top 5
 
-    def build_context_vector(self, text: str, base_embedding: np.ndarray) -> np.ndarray:
+    def analyze_entities(self, text: str) -> List[str]:
         """
-        Build augmented context vector combining base embedding with contextual signals
+        Extract named entities (simplified without spaCy).
         
         Args:
             text: Input text
-            base_embedding: Pre-computed semantic embedding
             
         Returns:
-            Normalized context vector with temporal, emotional, and causal components
+            List of potential entities (capitalized words)
         """
-        # Extract signals
-        sentiment = self.analyze_sentiment(text)
-        temporal = self.extract_temporal_markers(text)
-        causal = self.extract_causal_indicators(text)
-
-        # Create component vectors
-        sentiment_vec = np.array([sentiment] * 32)
-        temporal_score = len(temporal) / 3.0  # Normalize
-        temporal_vec = np.array([temporal_score] * 32)
-        causal_score = len(causal) / 3.0
-        causal_vec = np.array([causal_score] * 32)
-
-        # Concatenate: prioritize base embedding
-        augmented = np.concatenate([
-            base_embedding[:900],  # Original embedding (most important)
-            sentiment_vec,
-            temporal_vec,
-            causal_vec
-        ])
-
-        # Normalize
-        norm = np.linalg.norm(augmented) + 1e-8
-        augmented = augmented / norm
-        
-        return augmented
+        words = text.split()
+        entities = [
+            word.rstrip('.,!?;:')
+            for word in words
+            if word[0].isupper() and len(word) > 2
+        ]
+        return list(set(entities))[:10]  # Top 10 unique

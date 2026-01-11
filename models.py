@@ -1,48 +1,56 @@
 """
-Data models and structures for Advanced Narrative Consistency RAG
+Models for Advanced Narrative Consistency RAG
 """
 
-from dataclasses import dataclass
-from typing import List, Tuple
+from dataclasses import dataclass, field
 import numpy as np
-import networkx as nx
+from typing import List, Dict
 
 
 @dataclass
 class ChunkMetadata:
-    """Rich metadata for each narrative chunk"""
+    """Metadata for a narrative chunk"""
     text: str
     embedding: np.ndarray
-    context_vector: np.ndarray  # Temporal + Emotional + Causal
+    context_vector: np.ndarray
     chunk_id: str
     start_pos: int
     end_pos: int
-    dependency_graph: nx.DiGraph
     entities: List[str]
-    sentiment: float  # -1 (negative) to 1 (positive)
+    sentiment: float
     temporal_markers: List[str]
     causal_indicators: List[str]
 
 
 @dataclass
 class BackstoryClaim:
-    """Extracted and structured backstory claim"""
-    claim_id: str
+    """A single claim extracted from backstory"""
     text: str
     embedding: np.ndarray
-    context_vector: np.ndarray
     claim_type: str  # "event", "belief", "motivation", "fear", "trait"
-    entities: List[str]
-    importance: float  # 0-1 relevance score
+    claim_id: str = ""
+    importance: float = 0.8
+
+
+@dataclass
+class ClaimVerificationResult:
+    """Result of verifying a single claim"""
+    claim: str
+    verdict: str  # supported, contradicted, not_mentioned, unknown
+    explanation: str
+    confidence: float = 0.5
+    supporting_chunks: List[str] = field(default_factory=list)
+    opposing_chunks: List[str] = field(default_factory=list)
 
 
 @dataclass
 class ConsistencyAnalysis:
-    """Full consistency analysis result for a backstory"""
+    """Overall consistency analysis result"""
     backstory_id: str
-    prediction: int  # 0: Contradict, 1: Consistent
+    verdict: str  # consistent, contradicted, unknown
     confidence: float
-    supporting_chunks: List[Tuple[str, float]]  # (chunk_id, similarity)
-    opposing_chunks: List[Tuple[str, float]]  # (chunk_id, neg_similarity)
-    reasoning: str
-    graph_path: List[str]  # Multi-hop reasoning chain
+    rationale: str
+    claim_results: List[Dict] = field(default_factory=list)
+    num_supported_claims: int = 0
+    num_contradicted_claims: int = 0
+    num_unknown_claims: int = 0

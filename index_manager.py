@@ -1,179 +1,178 @@
 """
-Index building and management for narrative corpus
+Index manager for building and caching narrative chunks per book
+Creates separate pkl files in ./db directory for each book
 """
 
-import logging
 import pickle
+import logging
 from pathlib import Path
 from typing import Dict, List, Tuple
 import numpy as np
 
-from config import DEFAULT_BOOKS_DIR, DEFAULT_INDEX_PATH, nlp
 from models import ChunkMetadata
-from chunker import DependencyChunker
-from context_builder import ContextVectorBuilder
-from graph_rag import GraphRAG
 
 logger = logging.getLogger(__name__)
 
 
 class IndexManager:
-    """Manages building, loading, and saving narrative indices"""
+    """
+    Builds, caches, and manages narrative chunk indices.
+    Creates separate .pkl file for each book in ./db directory.
+    """
 
-    def __init__(self, chunker: DependencyChunker, context_builder: ContextVectorBuilder,
-                 client, books_dir: Path = DEFAULT_BOOKS_DIR, 
-                 index_path: Path = DEFAULT_INDEX_PATH):
+    def __init__(self, chunker, context_builder, client, books_dir, db_path):
         """
-        Initialize index manager
+        Initialize IndexManager.
         
         Args:
-            chunker: DependencyChunker instance
+            chunker: SemanticChunker instance
             context_builder: ContextVectorBuilder instance
             client: NVIDIAClient instance
-            books_dir: Directory containing book texts
-            index_path: Path to save/load pickled index
+            books_dir: Directory containing .txt files
+            db_path: Directory to store .pkl files (one per book)
         """
         self.chunker = chunker
         self.context_builder = context_builder
         self.client = client
-        self.books_dir = books_dir
-        self.index_path = index_path
+        self.books_dir = Path(books_dir)
+        self.db_path = Path(db_path)
+        self.corpus = {}  # book_name -> List[ChunkMetadata]
         
-        self.corpus: Dict[str, List[ChunkMetadata]] = {}
-        self.graph_rag: Dict[str, GraphRAG] = {}
+        # Ensure db_path exists
+        self.db_path.mkdir(parents=True, exist_ok=True)
         
-        logger.info(f"IndexManager initialized for {books_dir}")
+        logger.info(f"IndexManager initialized (books_dir={books_dir}, db={db_path})")
 
-    def load_or_build(self):
-        """Load cached index or build from scratch"""
-        if self.index_path.exists():
-            self._load_from_cache()
-        else:
-            self._build_index()
-
-    def _load_from_cache(self):
-        """Load index from per-book pickle files"""
-        try:
-            books_loaded = 0
-            for book_file in self.books_dir.glob("*.txt"):
-                book_key = book_file.stem.lower()
-                per_book_index = self.index_path.parent / f"advanced_index_{book_key}.pkl"
-                
-                if per_book_index.exists():
-                    with open(per_book_index, "rb") as f:
-                        chunks, graph = pickle.load(f)
-                        self.corpus[book_key] = chunks
-                        self.graph_rag[book_key] = graph
-                    books_loaded += 1
-                    logger.info(f"  Loaded {book_key}: {len(chunks)} chunks")
-            
-            if books_loaded == 0:
-                logger.info("No cached indices found. Building fresh index...")
-                self._build_index()
-            else:
-                logger.info(f"Loaded cached index for {books_loaded} books")
-                logger.info(f"  Total chunks indexed: {sum(len(c) for c in self.corpus.values())}")
-        except Exception as e:
-            logger.error(f"Failed to load index: {e}")
-            logger.info("Building fresh index...")
-            self._build_index()
-
-    def _build_index(self):
-        """Build index from book files"""
-        logger.info("Building advanced narrative index (this may take a while)...")
+    def load_or_build(self) -> Dict[str, List[ChunkMetadata]]:
+        """
+        Load cached indices or build new ones.
+        For each book, checks if .pkl exists in db_path.
+        If not, builds from .txt file.
         
+        Returns:
+            Dictionary mapping book_name -> List[ChunkMetadata]
+        """
         if not self.books_dir.exists():
-            logger.warning(f"Books directory not found: {self.books_dir}")
-            return
+            logger.error(f"Books directory not found: {self.books_dir}")
+            return {}
 
-        for book_file in self.books_dir.glob("*.txt"):
-            self._index_book(book_file)
+        txt_files = list(self.books_dir.glob("*.txt"))
+        logger.info(f"Found {len(txt_files)} text files in {self.books_dir}")
 
-        self._save_to_cache()
-
-    def _index_book(self, book_file: Path):
-        """Index a single book file"""
-        book_key = book_file.stem.lower()
-        text = book_file.read_text(encoding="utf-8", errors="ignore")
-
-        logger.info(f"Processing {book_key}...")
-
-        # Chunk with dependency parsing
-        chunks = self.chunker.chunk_text(text)
-        chunk_texts = [c[0] for c in chunks]
-
-        # Generate embeddings
-        try:
-            embeddings = self.client.embed(chunk_texts)
-        except Exception as e:
-            logger.error(f"Failed to embed chunks for {book_key}: {e}")
-            return
-
-        # Create chunk metadata objects
-        chunk_objects = []
-        # Create chunk metadata objects
-        chunk_objects = []
-        current_pos = 0
-        total_len = len(text)
-        
-        for i, (chunk_text, dep_graph, entities) in enumerate(chunks):
-            chunk_id = f"{book_key}_chunk_{i}"
-            
-            # Find exact position (simplified approach: assuming ordered chunks reconstruct text)
-            # In a real scenario, we'd use exact span indices from the tokenizer/splitter
-            start_pos = text.find(chunk_text, current_pos)
-            if start_pos == -1:
-                start_pos = current_pos # Fallback
-            
-            end_pos = start_pos + len(chunk_text)
-            current_pos = end_pos
-
-            # Build context vector
-            context_vec = self.context_builder.build_context_vector(chunk_text, embeddings[i])
-
-            chunk_obj = ChunkMetadata(
-                text=chunk_text,
-                embedding=embeddings[i],
-                context_vector=context_vec,
-                chunk_id=chunk_id,
-                start_pos=start_pos,
-                end_pos=end_pos,
-                dependency_graph=dep_graph,
-                entities=entities,
-                sentiment=self.context_builder.analyze_sentiment(chunk_text),
-                temporal_markers=self.context_builder.extract_temporal_markers(chunk_text),
-                causal_indicators=self.context_builder.extract_causal_indicators(chunk_text)
-            )
-            chunk_objects.append(chunk_obj)
-
-        self.corpus[book_key] = chunk_objects
-
-        # Build Graph-RAG
-        self.graph_rag[book_key] = GraphRAG(chunk_objects)
-
-        logger.info(f"  Indexed {len(chunk_objects)} chunks")
-
-    def _save_to_cache(self):
-        """Save index to per-book pickle files"""
-        try:
-            for book_key, chunks in self.corpus.items():
-                graph = self.graph_rag.get(book_key)
-                per_book_index = self.index_path.parent / f"advanced_index_{book_key}.pkl"
+        for book_file in txt_files:
+            try:
+                book_key = book_file.stem.lower()
+                logger.info(f"Processing book: {book_key}")
                 
-                with open(per_book_index, "wb") as f:
-                    pickle.dump((chunks, graph), f)
-                logger.info(f"Saved index for {book_key} to {per_book_index}")
-        except Exception as e:
-            logger.error(f"Failed to save index: {e}")
+                # Check if pkl exists
+                pkl_path = self.db_path / f"{book_key}.pkl"
+                
+                if pkl_path.exists():
+                    logger.info(f"  Loading cached index: {pkl_path}")
+                    self._load_book_index(book_key, pkl_path)
+                else:
+                    logger.info(f"  Building index from text: {book_file}")
+                    self._build_book_index(book_key, book_file, pkl_path)
+                    
+            except Exception as e:
+                logger.error(f"Error processing {book_file}: {e}")
 
-    def get_corpus(self) -> Dict[str, List[ChunkMetadata]]:
-        """Get indexed corpus"""
+        logger.info(f"Index loading complete. Books loaded: {list(self.corpus.keys())}")
         return self.corpus
 
-    def get_graph_rag(self) -> Dict[str, GraphRAG]:
-        """Get Graph-RAG instances by book"""
-        return self.graph_rag
+    def _load_book_index(self, book_key: str, pkl_path: Path):
+        """Load cached index for a specific book"""
+        try:
+            with open(pkl_path, "rb") as f:
+                chunks = pickle.load(f)
+            self.corpus[book_key] = chunks
+            logger.info(f"  ✓ Loaded {len(chunks)} chunks from cache")
+        except Exception as e:
+            logger.error(f"Failed to load cache {pkl_path}: {e}")
+            raise
 
-    def get_chunks_for_book(self, book_key: str) -> List[ChunkMetadata]:
-        """Get all chunks for a specific book"""
+    def _build_book_index(self, book_key: str, book_file: Path, pkl_path: Path):
+        """Build index for a specific book and save to pkl"""
+        try:
+            text = book_file.read_text(encoding="utf-8")
+            logger.info(f"  Text size: {len(text)} characters")
+
+            # Chunk the text
+            chunks = self.chunker.chunk_text(text)
+            logger.info(f"  Created {len(chunks)} chunks")
+
+            # Embed chunks and build metadata
+            chunk_texts = [c for c in chunks]
+            embeddings = self.client.embed(chunk_texts)
+            logger.info(f"  Embedded {len(embeddings)} chunks")
+
+            book_chunks = []
+            char_pos = 0
+
+            for i, chunk_text in enumerate(chunk_texts):
+                embedding = np.array(embeddings[i])
+                context_vec = self.context_builder.build_context_vector(
+                    chunk_text, embedding
+                )
+
+                # Extract entities, sentiment, temporal/causal markers
+                try:
+                    import spacy
+                    nlp = spacy.load("en_core_web_sm")
+                    doc = nlp(chunk_text[:1000])  # Limit for performance
+                    entities = [ent.text for ent in doc.ents]
+                except Exception as e:
+                    logger.debug(f"Failed to extract entities: {e}")
+                    entities = []
+
+                sentiment = self.context_builder.analyze_sentiment(chunk_text)
+                temporal = self.context_builder.extract_temporal_markers(chunk_text)
+                causal = self.context_builder.extract_causal_indicators(chunk_text)
+
+                meta = ChunkMetadata(
+                    text=chunk_text,
+                    embedding=embedding,
+                    context_vector=context_vec,
+                    chunk_id=f"{book_key}_{i}",
+                    start_pos=char_pos,
+                    end_pos=char_pos + len(chunk_text),
+                    entities=entities,
+                    sentiment=sentiment,
+                    temporal_markers=temporal,
+                    causal_indicators=causal
+                )
+                book_chunks.append(meta)
+                char_pos += len(chunk_text) + 1
+
+            self.corpus[book_key] = book_chunks
+            
+            # Save to pkl file
+            self._save_book_index(book_key, pkl_path, book_chunks)
+            logger.info(f"  ✓ Built {len(book_chunks)} chunks and cached to {pkl_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to build index for {book_key}: {e}")
+            raise
+
+    def _save_book_index(self, book_key: str, pkl_path: Path, chunks: List[ChunkMetadata]):
+        """Save book index to pkl file"""
+        try:
+            with open(pkl_path, "wb") as f:
+                pickle.dump(chunks, f)
+            logger.debug(f"  Cached {len(chunks)} chunks to {pkl_path}")
+        except Exception as e:
+            logger.error(f"Failed to save index to {pkl_path}: {e}")
+            raise
+
+    def get_corpus(self) -> Dict[str, List[ChunkMetadata]]:
+        """Get the loaded corpus"""
+        return self.corpus
+
+    def get_book_chunks(self, book_key: str) -> List[ChunkMetadata]:
+        """Get chunks for a specific book"""
         return self.corpus.get(book_key, [])
+
+    def list_cached_books(self) -> List[str]:
+        """List all cached books in db directory"""
+        pkl_files = list(self.db_path.glob("*.pkl"))
+        return [f.stem for f in pkl_files]
