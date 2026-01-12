@@ -1,16 +1,17 @@
 """
-Claim extraction from backstory text
+Claim extraction from backstory text using NLP
 """
 
 import logging
 from typing import List
 from nvidia_client import NVIDIAClient
+from config import nlp
 
 logger = logging.getLogger(__name__)
 
 
 class ClaimExtractor:
-    """Extract atomic factual claims from backstory text"""
+    """Extract atomic factual claims from backstory text using NLP"""
 
     def __init__(self, llm: NVIDIAClient):
         self.llm = llm
@@ -19,9 +20,10 @@ class ClaimExtractor:
     def extract_claims(self, backstory: str) -> List[str]:
         """
         Extract atomic factual claims from backstory text.
+        Uses NLP to identify key entities and relations before LLM extraction.
         
         Args:
-            backstory: Backstory text (string or combined from dict)
+            backstory: Backstory text
             
         Returns:
             List of claim strings
@@ -30,13 +32,29 @@ class ClaimExtractor:
             logger.warning("Empty backstory provided to extract_claims")
             return []
 
-        prompt = f""""
-        ### ROLE
+        # Pre-process with NLP to identify key entities
+        doc = nlp(backstory)
+        
+        # Extract key entities for context
+        persons = [ent.text for ent in doc.ents if ent.label_ == 'PERSON']
+        dates = [ent.text for ent in doc.ents if ent.label_ == 'DATE']
+        locations = [ent.text for ent in doc.ents if ent.label_ in ['GPE', 'LOC']]
+        
+        entity_context = ""
+        if persons:
+            entity_context += f"\nKey characters: {', '.join(set(persons[:5]))}"
+        if dates:
+            entity_context += f"\nKey dates: {', '.join(set(dates[:5]))}"
+        if locations:
+            entity_context += f"\nKey locations: {', '.join(set(locations[:5]))}"
+
+        prompt = f"""### ROLE
 You are a Narrative Logic Auditor. Your task is to decompose a character backstory into unique, atomic, and verifiable "Narrative Anchors" to be checked against a source text.
 
 ### INPUT
 BACKSTORY:
 {backstory}
+{entity_context}
 
 ### EXTRACTION RULES (STRICT)
 1. **Atomic Only**: Each claim must be a single, independent fact. No "and," "but," or "because."
@@ -47,6 +65,7 @@ BACKSTORY:
     - **Relational**: Family ties, specific interactions with other characters.
     - **Causal/Action**: Specific events that happened (e.g., "John bought a car," not "John liked his car").
 4. **Discard Fluff**: Ignore subjective descriptions (e.g., "He was very brave") unless they are core character traits mentioned in the narrative.
+5. **Entity-Focused**: Ensure claims reference the key entities identified above.
 
 ### OUTPUT FORMAT
 Return ONLY a newline-separated list of claims. 
@@ -73,12 +92,35 @@ Claims:"""
                 if line.strip() and not line.strip().startswith(('#', '-', '*'))
             ]
             
-            # Filter empty strings
-            claims = [c for c in claims if c]
+            # Filter empty strings and validate claims contain entities
+            validated_claims = []
+            for claim in claims:
+                if claim and self._validate_claim(claim, persons, dates, locations):
+                    validated_claims.append(claim)
             
-            logger.info(f"Extracted {len(claims)} claims from backstory")
-            return claims
+            logger.info(f"Extracted {len(validated_claims)} validated claims from backstory")
+            return validated_claims
             
         except Exception as e:
             logger.error(f"Error extracting claims: {e}")
             return []
+    
+    def _validate_claim(self, claim: str, persons: List[str], dates: List[str], locations: List[str]) -> bool:
+        """
+        Validate that claim contains at least one key entity or is substantive.
+        """
+        claim_lower = claim.lower()
+        
+        # Check if claim contains any key entities
+        for person in persons:
+            if person.lower() in claim_lower:
+                return True
+        for date in dates:
+            if date.lower() in claim_lower:
+                return True
+        for location in locations:
+            if location.lower() in claim_lower:
+                return True
+        
+        # If no entities, check if claim is substantive (>5 words)
+        return len(claim.split()) > 5

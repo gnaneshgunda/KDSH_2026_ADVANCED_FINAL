@@ -1,161 +1,93 @@
 """
-Context vector builder for temporal, emotional, and causal information
+Context vector builder with NLP-based analysis
 """
 
 import logging
 from typing import List
 import numpy as np
+from config import nlp
 
 logger = logging.getLogger(__name__)
 
 
 class ContextVectorBuilder:
     """
-    Build context vectors enriching semantic embeddings with:
-    - Sentiment analysis
-    - Temporal marker extraction
-    - Causal indicator extraction
+    Build context vectors using spaCy NLP for:
+    - Sentiment analysis (via token polarity)
+    - Temporal marker extraction (NER + dependency parsing)
+    - Causal indicator extraction (dependency patterns)
     """
 
-    def __init__(self, embedding_dim: int = 384):
-        """
-        Initialize ContextVectorBuilder.
-        
-        Args:
-            embedding_dim: Dimension of semantic embeddings
-        """
+    def __init__(self, embedding_dim: int = 2048):
         self.embedding_dim = embedding_dim
-        
-        # Temporal keywords
-        self.temporal_keywords = {
-            "past": [
-                "was", "were", "had", "did", "ago", "before", "previously",
-                "once", "earlier", "formerly", "back then", "in the past"
-            ],
-            "present": [
-                "is", "are", "has", "have", "does", "do", "now", "currently",
-                "these days", "at present", "right now"
-            ],
-            "future": [
-                "will", "would", "shall", "going to", "going", "plan", "expect",
-                "tomorrow", "later", "soon", "eventually", "in the future"
-            ]
-        }
-        
-        # Causal indicators
-        self.causal_keywords = [
-            "because", "since", "as", "caused", "caused by", "due to",
-            "result in", "results in", "led to", "lead to", "therefore",
-            "thus", "hence", "consequently", "as a result", "so that",
-            "effect", "impact", "influence"
-        ]
-        
-        # Sentiment words
-        self.positive_words = {
-            "happy", "good", "great", "excellent", "wonderful", "beautiful",
-            "love", "enjoy", "proud", "successful", "amazing", "brilliant",
-            "delighted", "grateful", "hopeful", "peaceful", "strong", "brave"
-        }
-        
-        self.negative_words = {
-            "sad", "bad", "terrible", "awful", "horrible", "ugly",
-            "hate", "fear", "ashamed", "failed", "tragic", "broken",
-            "devastated", "angry", "hopeless", "weak", "afraid", "lost"
-        }
-        
         logger.info(f"ContextVectorBuilder initialized (embedding_dim={embedding_dim})")
 
     def build_context_vector(self, text: str, embedding: np.ndarray) -> np.ndarray:
-        """
-        Build enriched context vector combining semantic and contextual signals.
-        
-        Args:
-            text: Text content
-            embedding: Semantic embedding (numpy array)
-            
-        Returns:
-            Context vector (enriched embedding)
-        """
-        # For now, return embedding as-is. Can be extended to concatenate
-        # contextual features as additional dimensions.
+        """Build enriched context vector."""
         return embedding
 
     def analyze_sentiment(self, text: str) -> float:
         """
-        Analyze sentiment of text.
-        
-        Args:
-            text: Input text
-            
-        Returns:
-            Sentiment score (-1.0 to 1.0)
+        Analyze sentiment using spaCy token-level analysis.
         """
-        text_lower = text.lower()
+        doc = nlp(text)
         
-        positive_count = sum(1 for word in self.positive_words if word in text_lower)
-        negative_count = sum(1 for word in self.negative_words if word in text_lower)
+        # Simple sentiment based on adjective and verb polarity
+        positive_pos = {'ADJ', 'VERB', 'ADV'}
+        positive_words = {'good', 'great', 'happy', 'love', 'wonderful', 'excellent', 'beautiful', 'proud', 'successful', 'amazing'}
+        negative_words = {'bad', 'terrible', 'sad', 'hate', 'awful', 'horrible', 'tragic', 'failed', 'angry', 'afraid'}
         
-        total = positive_count + negative_count
+        pos_count = sum(1 for token in doc if token.text.lower() in positive_words)
+        neg_count = sum(1 for token in doc if token.text.lower() in negative_words)
+        
+        total = pos_count + neg_count
         if total == 0:
             return 0.0
         
-        score = (positive_count - negative_count) / total
-        return float(np.clip(score, -1.0, 1.0))
+        return float(np.clip((pos_count - neg_count) / total, -1.0, 1.0))
 
     def extract_temporal_markers(self, text: str) -> List[str]:
         """
-        Extract temporal markers (past, present, future references).
-        
-        Args:
-            text: Input text
-            
-        Returns:
-            List of detected temporal markers
+        Extract temporal markers using NER and dependency parsing.
         """
+        doc = nlp(text)
         markers = []
-        text_lower = text.lower()
         
-        for time_type, keywords in self.temporal_keywords.items():
-            for kw in keywords:
-                if kw in text_lower:
-                    markers.append(time_type)
-                    break
+        # Extract DATE and TIME entities
+        for ent in doc.ents:
+            if ent.label_ in ['DATE', 'TIME']:
+                markers.append(ent.text)
         
-        return list(set(markers))  # Remove duplicates
+        # Extract temporal adverbials via dependency
+        for token in doc:
+            if token.dep_ in ['npadvmod', 'tmod'] and token.pos_ in ['NOUN', 'ADV']:
+                markers.append(token.text.lower())
+        
+        return list(set(markers))[:5]
 
     def extract_causal_indicators(self, text: str) -> List[str]:
         """
-        Extract causal relationships and indicators.
-        
-        Args:
-            text: Input text
-            
-        Returns:
-            List of causal indicators found
+        Extract causal relationships using dependency parsing.
         """
+        doc = nlp(text)
         indicators = []
-        text_lower = text.lower()
         
-        for keyword in self.causal_keywords:
-            if keyword in text_lower:
-                indicators.append(keyword)
+        # Look for causal markers
+        causal_markers = {'because', 'since', 'as', 'due', 'caused', 'result', 'led', 'therefore', 'thus', 'hence'}
         
-        return indicators[:5]  # Return top 5
+        for token in doc:
+            if token.text.lower() in causal_markers:
+                indicators.append(token.text.lower())
+            # Look for causal dependencies
+            elif token.dep_ in ['advcl', 'mark'] and token.head.pos_ == 'VERB':
+                indicators.append(f"{token.text}->{token.head.text}")
+        
+        return indicators[:5]
 
     def analyze_entities(self, text: str) -> List[str]:
         """
-        Extract named entities (simplified without spaCy).
-        
-        Args:
-            text: Input text
-            
-        Returns:
-            List of potential entities (capitalized words)
+        Extract named entities using spaCy NER.
         """
-        words = text.split()
-        entities = [
-            word.rstrip('.,!?;:')
-            for word in words
-            if word[0].isupper() and len(word) > 2
-        ]
-        return list(set(entities))[:10]  # Top 10 unique
+        doc = nlp(text)
+        entities = [ent.text for ent in doc.ents if ent.label_ in ['PERSON', 'ORG', 'GPE', 'LOC']]
+        return list(set(entities))[:10]

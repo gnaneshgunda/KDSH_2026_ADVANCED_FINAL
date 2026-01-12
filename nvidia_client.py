@@ -48,7 +48,7 @@ def _embed_text_hf(text: str) -> np.ndarray:
         # Fallback: deterministic stub
         seed = _text_to_seed(text)
         rng = np.random.RandomState(seed)
-        vec = rng.normal(size=(EMBEDDING_DIM,)).astype(np.float32)
+        vec = rng.normal(size=(2048,)).astype(np.float32)
         norm = np.linalg.norm(vec) + 1e-8
         return vec / norm
 

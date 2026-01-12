@@ -39,7 +39,7 @@ DEFAULT_CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "400"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "80"))
 
 # Embedding Configuration
-EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "384"))
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "2048"))
 
 # Retrieval Configuration
 DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "5"))
