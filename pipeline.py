@@ -26,7 +26,7 @@ from config import (
     NVIDIA_API_KEY, NVIDIA_BASE_URL, DEFAULT_BOOKS_DIR, DEFAULT_CSV_PATH,
     DEFAULT_DB_PATH, DEFAULT_OUTPUT_FILE, DEFAULT_CHUNK_SIZE,
     EMBEDDING_DIM, DEFAULT_TOP_K, MAX_TOP_K, RETRIEVAL_STEP, MAX_RETRIEVAL_ROUNDS,
-    FALLBACK_ENABLED, LLM_TEMPERATURE
+    FALLBACK_ENABLED, LLM_TEMPERATURE, USE_PATHWAY
 )
 from nvidia_client import NVIDIAClient
 from chunker import SemanticChunker
@@ -124,6 +124,18 @@ class AdvancedNarrativeConsistencyRAG:
             self.chunker, self.context_builder, self.client,
             self.books_dir, self.db_path
         )
+        
+        # Pathway real-time indexing (optional)
+        self.pathway_indexer = None
+        if USE_PATHWAY:
+            try:
+                from pathway_indexer import enable_pathway_mode
+                self.pathway_indexer = enable_pathway_mode(
+                    self.books_dir, self.chunker, self.context_builder, self.client
+                )
+                logger.info("Pathway real-time indexing enabled")
+            except ImportError:
+                logger.warning("Pathway not installed. Install with: pip install pathway")
 
 
         # Claim-based components

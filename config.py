@@ -66,6 +66,9 @@ NEGATION_THRESHOLD = float(os.getenv("NEGATION_THRESHOLD", "0.7"))
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.0"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1024"))
 
+# Pathway Configuration
+USE_PATHWAY = os.getenv("USE_PATHWAY", "false").lower() == "true"
+
 # Logging Configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 logger.setLevel(getattr(logging, LOG_LEVEL))
