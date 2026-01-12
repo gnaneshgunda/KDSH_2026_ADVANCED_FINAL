@@ -12,14 +12,14 @@ class ChunkMetadata:
     """Metadata for a narrative chunk"""
     text: str
     embedding: np.ndarray
-    context_vector: np.ndarray
     chunk_id: str
-    start_pos: int
-    end_pos: int
     entities: List[str]
-    sentiment: float
     temporal_markers: List[str]
     causal_indicators: List[str]
+    sentiment: float
+    context_vector: np.ndarray = None
+    start_pos: int = 0
+    end_pos: int = 0
 
 
 @dataclass

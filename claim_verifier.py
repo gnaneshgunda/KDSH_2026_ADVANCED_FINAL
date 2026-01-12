@@ -23,22 +23,17 @@ class ClaimVerifier:
 
         evidence_text = "\n\n".join(f"[Chunk {i+1}] {e}" for i, e in enumerate(evidence_chunks))
 
-        prompt = f"""Compare the CLAIM to the NARRATIVE EVIDENCE.
+        prompt = f"""Compare the BACKSTORY CLAIM to the NARRATIVE EVIDENCE.
 CLAIM: "{claim}"
 EVIDENCE: {evidence_text}
 
-Is the claim CONTRADICTED by the evidence?
-A contradiction occurs if the evidence:
-1. Explicitly states the opposite.
-2. Establishes facts making the claim impossible (e.g., location, timing, or identity conflicts).
-3. Violates character constraints established in the text.
+Task: Determine if this claim is logically incompatible with the narrative events, character states, or world-rules[cite: 8, 39].
+Rules:
+1. CONTRADICTED (0): The evidence rules out the claim (e.g., character's location or status conflicts)[cite: 6, 12].
+2. SUPPORTED: Explicit evidence confirms the claim.
+3. NOT_MENTIONED: Narrative is silent/neutral. Silence is NOT a contradiction[cite: 36, 151].
 
-Return JSON ONLY:
-{{
-  "verdict": "SUPPORTED" | "CONTRADICTED" | "NOT_MENTIONED",
-  "explanation": "One sentence rationale for the verdict",
-  "confidence": 0.0-1.0
-}}"""
+Return JSON ONLY: {{"verdict": "SUPPORTED"|"CONTRADICTED"|"NOT_MENTIONED", "explanation": "Rationale", "confidence": 0.0-1.0}}"""
         
         try:
             response = self.llm.chat(prompt)

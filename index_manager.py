@@ -91,63 +91,34 @@ class IndexManager:
             logger.error(f"Failed to load cache {pkl_path}: {e}")
             raise
 
-    def _build_book_index(self, book_key: str, book_file: Path, pkl_path: Path):
-        """Build index for a specific book and save to pkl"""
+    def _build_book_index(self, book_key, book_file, pkl_path):
         try:
             text = book_file.read_text(encoding="utf-8")
-            logger.info(f"  Text size: {len(text)} characters")
-
-            # Chunk the text
             chunks = self.chunker.chunk_text(text)
-            logger.info(f"  Created {len(chunks)} chunks")
-
-            # Embed chunks and build metadata
-            chunk_texts = [c for c in chunks]
-            embeddings = self.client.embed(chunk_texts)
-            logger.info(f"  Embedded {len(embeddings)} chunks")
-
+            embeddings = self.client.embed(chunks)
+            
             book_chunks = []
-            char_pos = 0
-
-            for i, chunk_text in enumerate(chunk_texts):
-                embedding = np.array(embeddings[i])
-                context_vec = self.context_builder.build_context_vector(
-                    chunk_text, embedding
-                )
-
-                # Extract entities, sentiment, temporal/causal markers
-                try:
-                    import spacy
-                    nlp = spacy.load("en_core_web_sm")
-                    doc = nlp(chunk_text[:1000])  # Limit for performance
-                    entities = [ent.text for ent in doc.ents]
-                except Exception as e:
-                    logger.debug(f"Failed to extract entities: {e}")
-                    entities = []
-
-                sentiment = self.context_builder.analyze_sentiment(chunk_text)
+            for i, chunk_text in enumerate(chunks):
+                # Extract high-value metadata for retrieval filtering
+                entities = self.context_builder.analyze_entities(chunk_text)
                 temporal = self.context_builder.extract_temporal_markers(chunk_text)
                 causal = self.context_builder.extract_causal_indicators(chunk_text)
-
+                
                 meta = ChunkMetadata(
                     text=chunk_text,
-                    embedding=embedding,
-                    context_vector=context_vec,
+                    embedding=np.array(embeddings[i]),
                     chunk_id=f"{book_key}_{i}",
-                    start_pos=char_pos,
-                    end_pos=char_pos + len(chunk_text),
-                    entities=entities,
-                    sentiment=sentiment,
+                    entities=entities, 
                     temporal_markers=temporal,
-                    causal_indicators=causal
+                    causal_indicators=causal,
+                    sentiment=self.context_builder.analyze_sentiment(chunk_text)
                 )
                 book_chunks.append(meta)
-                char_pos += len(chunk_text) + 1
-
+                
+            # PERSISTENCE: Metadata is now baked into the .pkl files in ./db
+            with open(pkl_path, "wb") as f:
+                pickle.dump(book_chunks, f)
             self.corpus[book_key] = book_chunks
-            
-            # Save to pkl file
-            self._save_book_index(book_key, pkl_path, book_chunks)
             logger.info(f"  ✓ Built {len(book_chunks)} chunks and cached to {pkl_path}")
 
         except Exception as e:
