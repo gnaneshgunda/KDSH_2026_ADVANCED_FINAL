@@ -8,7 +8,6 @@ import hashlib
 import json
 import numpy as np
 import requests
-from sympy import true
 from config import EMBEDDING_DIM
 import logging
 
@@ -89,9 +88,15 @@ class NVIDIAClient:
         try:
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
-                "Accept": "application/json",
+                "Content-Type": "application/json",
             }
-            payload = {"input": [t if t is not None else "" for t in texts]}
+            payload = {
+                "input": [t if t is not None else "" for t in texts],
+                "model": "nvidia/llama-3.2-nemoretriever-300m-embed-v2",
+                "input_type": "query",
+                "encoding_format": "float",
+                "truncate": "START"
+            }
             
             response = requests.post(
                 f"{self.base_url}/embeddings",
@@ -146,7 +151,7 @@ class NVIDIAClient:
             }
             
             response = requests.post(
-                f"{self.base_url}/chat/completions",
+                self.base_url+ "/chat/completions",
                 headers=headers,
                 json=payload,
                 timeout=60
