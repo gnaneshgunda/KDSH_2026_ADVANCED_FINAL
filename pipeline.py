@@ -274,41 +274,54 @@ class AdvancedNarrativeConsistencyRAG:
 
 
     def analyze_backstory(self, book_name, character, backstory_text, narrative_chunks):
-        # Analyze a broader set of claims to get better evidence density [cite: 115, 148]
+        """Analyze backstory and aggregate rationales for both success and failure."""
+        # Extract claims
         claims = self.claim_extractor.extract_claims(backstory_text)[:12]
         retriever = HybridRetriever(narrative_chunks, self.client)
         
         results = []
+        supported_evidence = [] # To store rationales for consistent claims
+
         for claim in claims:
             evidence = retriever.retrieve(claim, character, top_k=7)
+            # res now contains: verdict, rationale, confidence
             res = self.claim_verifier.verify(claim, [c.text for c in evidence])
             
-            # SINGLE-STRIKE: If one claim is a proven contradiction, we exit with Result 0 [cite: 12, 13, 67]
+            # SINGLE-STRIKE: If one claim is a proven contradiction
             if res["verdict"] == "CONTRADICTED":
                 return ConsistencyAnalysis(
                     backstory_id=character, 
                     verdict="0", 
                     confidence=res.get("confidence", 0.9), 
-                    rationale=res["explanation"]
+                    rationale=f"CONTRADICTION: {res['rationale']}" # Sync with verifier key
                 )
+            
+            # Collect rationales for supported claims
+            if res["verdict"] == "SUPPORTED":
+                supported_evidence.append(f"• {res['rationale']}")
+            
             results.append(res)
 
         # DYNAMIC CONFIDENCE CALCULATION 
-        # Penalize confidence if most claims were "NOT_MENTIONED"
-        supported_count = sum(1 for r in results if r["verdict"] == "SUPPORTED")
+        supported_count = len(supported_evidence)
         total_claims = len(results)
-        
-        # Formula: Base 0.6 + (Supported Ratio * 0.4)
-        # This ensures a range of 0.6 to 1.0 instead of a flat 0.75
         dynamic_conf = 0.6 + (0.4 * (supported_count / total_claims)) if total_claims > 0 else 0.5
         
+        # Build the detailed rationale for Consistency
+        if supported_count > 0:
+            # Show the top 2-3 verified facts as rationale
+            rationale_summary = "Consistent. Verified narrative anchors:\n" + "\n".join(supported_evidence[:3])
+            if supported_count > 3:
+                rationale_summary += f"\n(+{supported_count - 3} other verified points)"
+        else:
+            rationale_summary = "Consistent. No contradictions found, though narrative evidence was implicit."
+
         return ConsistencyAnalysis(
             backstory_id=character, 
             verdict="1", 
             confidence=dynamic_conf, 
-            rationale=f"Consistent. Verified {supported_count}/{total_claims} claims against narrative context."
+            rationale=rationale_summary
         )
-
 
     def _verify_claim_with_fallback(self, claim: str, retriever: Retriever,
                                     verifier: ClaimVerifier) -> Dict:
@@ -466,30 +479,31 @@ class NarrativePipeline:
         self.verifier = claim_verifier
 
     def analyze_record(self, record_id, book_name, character, backstory):
-        # 1. Load book index (Metadata is already stored in the .pkl files in ./db)
         chunks = self.index_manager.get_book_chunks(book_name)
         
-        # COMPETITION FIX: If book is missing, do not return 'unknown'. Default to Consistent.
         if not chunks:
             return ConsistencyAnalysis(record_id, "1", 0.5, "Narrative context unavailable; assuming consistency.")
 
         retriever = HybridRetriever(chunks, self.index_manager.client)
         claims = self.extractor.extract_claims(backstory)
         
-        all_results = []
+        verified_points = []
+        
         for claim in claims:
-            # Iterative Retrieval (Step 1: Standard, Step 2: Negation)
+            # Step 1: Standard Retrieval
             evidence = retriever.retrieve(claim, character, top_k=5)
             res = self.verifier.verify(claim, [c.text for c in evidence])
             
             if res["verdict"] == "CONTRADICTED":
-                # IMMEDIATE EXIT: If one claim fails, the whole backstory fails.
                 return ConsistencyAnalysis(
                     record_id, "0", 0.95, 
-                    f"Contradiction found in claim: '{claim}'. {res['explanation']}"
+                    f"Contradiction: {res['rationale']}"
                 )
             
-            # Negation Check: Specifically hunt for evidence of the opposite
+            if res["verdict"] == "SUPPORTED":
+                verified_points.append(res['rationale'])
+
+            # Step 2: Negation Check (Checking if the opposite is true)
             negation_query = f"Evidence that {character} did NOT {claim}"
             neg_evidence = retriever.retrieve(negation_query, character, top_k=3)
             neg_res = self.verifier.verify(claim, [c.text for c in neg_evidence])
@@ -497,17 +511,17 @@ class NarrativePipeline:
             if neg_res["verdict"] == "CONTRADICTED":
                 return ConsistencyAnalysis(
                     record_id, "0", 0.95, 
-                    f"Temporal/Causal conflict in claim: '{claim}'. {neg_res['explanation']}"
+                    f"Causal conflict: {neg_res['rationale']}"
                 )
-            
-            all_results.append(res)
 
-        # 2. FINAL BINARY DECISION: Default to Consistent
-        return ConsistencyAnalysis(
-            record_id, "1", 0.8, 
-            "No logical or causal contradictions detected across narrative segments."
-        )
+        # Build consistent rationale
+        if verified_points:
+            # Join top verification rationales for the CSV output
+            final_rationale = "Consistent. Evidence Found: " + " | ".join(verified_points[:2])
+        else:
+            final_rationale = "Consistent. No logical contradictions detected in the narrative flow."
 
+        return ConsistencyAnalysis(record_id, "1", 0.8, final_rationale)
 
 
 def main():

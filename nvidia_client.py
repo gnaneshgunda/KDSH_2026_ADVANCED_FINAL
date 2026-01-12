@@ -8,6 +8,7 @@ import hashlib
 import json
 import numpy as np
 import requests
+from sympy import true
 from config import EMBEDDING_DIM
 import logging
 
@@ -119,7 +120,7 @@ class NVIDIAClient:
         else:
             return self._chat_stub(messages, temperature)
     
-    def _chat_nvidia(self, messages, temperature: float = 0.0) -> str:
+    def _chat_nvidia(self, messages, temperature: float = 0.2) -> str:
         """Call NVIDIA chat API"""
         try:
             headers = {
@@ -134,11 +135,14 @@ class NVIDIAClient:
                 payload_messages = [{"role": "user", "content": prompt}]
             
             payload = {
-                "model": "meta/llama-3.1-8b-instruct",
+                "model": "deepseek-ai/deepseek-v3.1",
                 "messages": payload_messages,
                 "temperature": temperature,
-                "top_p": 1.0,
-                "max_tokens": 1024,
+                "top_p": 0.7,
+                "max_tokens": 8192,
+                "chat_template_kwargs": {
+                    "thinking": "true"
+                }
             }
             
             response = requests.post(
