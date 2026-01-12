@@ -1,5 +1,5 @@
 """
-Claim verification against narrative evidence
+Claim verification against narrative evidence with improved reasoning
 """
 
 import logging
@@ -19,44 +19,59 @@ class ClaimVerifier:
 
     def verify(self, claim: str, evidence_chunks: List[str]) -> Dict:
         if not evidence_chunks:
-            return {"verdict": "NOT_MENTIONED", "explanation": "No evidence available", "confidence": 0.5}
+            return {"verdict": "NOT_MENTIONED", "rationale": "No evidence available", "confidence": 0.5}
 
-        evidence_text = "\n\n".join(f"[Chunk {i+1}] {e}" for i, e in enumerate(evidence_chunks))
+        evidence_text = "\n\n".join(f"[Evidence {i+1}]\n{e}" for i, e in enumerate(evidence_chunks))
 
-        prompt = f"""
-You are a strict logic engine comparing a proposed BACKSTORY CLAIM against established NARRATIVE EVIDENCE. Use a step-by-step Chain of Thought process to ensure logical rigor.
+        prompt = f"""You are a precise fact-checker analyzing whether a CLAIM about a character's backstory is supported by NARRATIVE EVIDENCE.
 
-### INPUTS
-CLAIM: "{claim}"
-EVIDENCE: "{evidence_text}"
+**CLAIM TO VERIFY:**
+"{claim}"
 
-### LOGIC RULES
-1. **Burden of Proof**: Use ONLY the provided EVIDENCE. External knowledge, common sense assumptions, or "hallucinated" context are strictly forbidden.
-2. **The "Silence" Rule**: If the evidence does not explicitly address the specific subject matter, the verdict is NOT_MENTIONED. Being "consistent with the theme" or "thematically plausible" is NOT enough for SUPPORTED.
-3. **The "Conflict" Rule**: To be CONTRADICTED, there must be a direct factual clash or a logical impossibility (e.g., the evidence says a character is in London, the claim says they are in New York at the exact same time).
-4. **Synonym vs. Inference**: Synonyms (e.g., "enormous" vs. "huge") are SUPPORTED. Inferences (e.g., "he was crying" implies "he was sad") are NOT_MENTIONED unless the emotion is explicitly stated.
+**NARRATIVE EVIDENCE:**
+{evidence_text}
 
-### EVALUATION PROCESS (Chain of Thought)
-Follow these steps internally before providing the verdict:
-- Step 1: Identify the core subjects and actions in the CLAIM.
-- Step 2: Locate the specific segments in the EVIDENCE that discuss these subjects/actions.
-- Step 3: Check for a direct match (Supported).
-- Step 4: Check for a direct contradiction or mutual exclusivity (Contradicted).
-- Step 5: If neither 3 nor 4 applies, or if the evidence is silent on a key detail of the claim, default to Not Mentioned.
+**VERIFICATION RULES:**
 
-### OUTPUT FORMAT
-Return valid JSON only. No markdown formatting.
-Return valid JSON only. No markdown formatting.
+1. **SUPPORTED** - Use ONLY if:
+   - The evidence EXPLICITLY states the claim or a direct synonym
+   - Example: Claim "He was born in Paris" + Evidence "Jean was born in Paris" = SUPPORTED
+   - Direct paraphrases count ("enormous" = "huge")
+
+2. **CONTRADICTED** - Use ONLY if:
+   - The evidence EXPLICITLY contradicts the claim with opposite facts
+   - Example: Claim "He was in London" + Evidence "He was in Paris at that time" = CONTRADICTED
+   - Logical impossibilities count (timeline conflicts, mutually exclusive events)
+
+3. **NOT_MENTIONED** - Use if:
+   - The evidence is silent on the specific claim
+   - The evidence is thematically related but doesn't confirm the specific fact
+   - You need to infer or assume to connect evidence to claim
+   - Example: Claim "He was sad" + Evidence "He was crying" = NOT_MENTIONED (crying doesn't explicitly state sadness)
+
+**CRITICAL:**
+- Absence of evidence is NOT contradiction
+- Thematic consistency is NOT support
+- Reasonable inferences are NOT support
+- Only EXPLICIT statements count
+
+**OUTPUT FORMAT (JSON only, no markdown):**
 {{
   "verdict": "SUPPORTED" | "CONTRADICTED" | "NOT_MENTIONED",
-  "rationale": "Detailed explanation...",
+  "rationale": "Quote the specific evidence that led to this verdict. If NOT_MENTIONED, explain what specific detail is missing.",
   "confidence": 0.0-1.0
 }}
 """
         try:
             response = self.llm.chat(prompt)
-            # Helper to clean markdown if LLM adds it
             json_str = response.strip().replace("```json", "").replace("```", "").strip()
-            return json.loads(json_str)
-        except Exception:
-            return {"verdict": "NOT_MENTIONED", "explanation": "Analysis inconclusive", "confidence": 0.4}
+            result = json.loads(json_str)
+            
+            # Ensure rationale is detailed
+            if 'rationale' not in result or len(result['rationale']) < 20:
+                result['rationale'] = f"Verdict: {result.get('verdict', 'UNKNOWN')}. Analysis incomplete."
+            
+            return result
+        except Exception as e:
+            logger.error(f"Verification error: {e}")
+            return {"verdict": "NOT_MENTIONED", "rationale": f"Analysis error: {str(e)}", "confidence": 0.4}

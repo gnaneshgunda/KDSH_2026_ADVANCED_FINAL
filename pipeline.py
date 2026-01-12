@@ -274,54 +274,118 @@ class AdvancedNarrativeConsistencyRAG:
 
 
     def analyze_backstory(self, book_name, character, backstory_text, narrative_chunks):
-        """Analyze backstory and aggregate rationales for both success and failure."""
+        """Analyze backstory with detailed rationale generation."""
         # Extract claims
         claims = self.claim_extractor.extract_claims(backstory_text)[:12]
         retriever = HybridRetriever(narrative_chunks, self.client)
         
         results = []
-        supported_evidence = [] # To store rationales for consistent claims
+        supported_evidence = []
+        contradicted_evidence = []
 
-        for claim in claims:
-            evidence = retriever.retrieve(claim, character, top_k=7)
-            # res now contains: verdict, rationale, confidence
+        for i, claim in enumerate(claims, 1):
+            # Retrieve with character filtering and reranking
+            evidence = retriever.retrieve(
+                claim, 
+                character_name=character, 
+                top_k=5,
+                context_window=1,
+                use_rerank=True
+            )
+            
+            # Verify claim
             res = self.claim_verifier.verify(claim, [c.text for c in evidence])
             
-            # SINGLE-STRIKE: If one claim is a proven contradiction
+            # SINGLE-STRIKE: If one claim is contradicted, return immediately
             if res["verdict"] == "CONTRADICTED":
+                # Build detailed contradiction rationale
+                rationale = self._build_contradiction_rationale(
+                    claim, res, evidence, i, len(claims)
+                )
                 return ConsistencyAnalysis(
-                    backstory_id=character, 
-                    verdict="0", 
-                    confidence=res.get("confidence", 0.9), 
-                    rationale=f"CONTRADICTION: {res['rationale']}" # Sync with verifier key
+                    backstory_id=character,
+                    verdict="0",
+                    confidence=min(0.95, res.get("confidence", 0.9)),
+                    rationale=rationale
                 )
             
-            # Collect rationales for supported claims
+            # Collect evidence for supported claims
             if res["verdict"] == "SUPPORTED":
-                supported_evidence.append(f"• {res['rationale']}")
+                supported_evidence.append({
+                    'claim': claim,
+                    'rationale': res['rationale'],
+                    'confidence': res.get('confidence', 0.8),
+                    'evidence_count': len(evidence)
+                })
             
             results.append(res)
 
-        # DYNAMIC CONFIDENCE CALCULATION 
+        # Calculate dynamic confidence
         supported_count = len(supported_evidence)
         total_claims = len(results)
-        dynamic_conf = 0.6 + (0.4 * (supported_count / total_claims)) if total_claims > 0 else 0.5
         
-        # Build the detailed rationale for Consistency
-        if supported_count > 0:
-            # Show the top 2-3 verified facts as rationale
-            rationale_summary = "Consistent. Verified narrative anchors:\n" + "\n".join(supported_evidence[:3])
-            if supported_count > 3:
-                rationale_summary += f"\n(+{supported_count - 3} other verified points)"
+        if supported_count == 0:
+            # No explicit support, but no contradictions
+            confidence = 0.55
+            rationale = f"Consistent. Verified {total_claims} claims against narrative context. No contradictions found, though evidence was largely implicit."
         else:
-            rationale_summary = "Consistent. No contradictions found, though narrative evidence was implicit."
+            # Has explicit support
+            support_ratio = supported_count / total_claims
+            confidence = 0.65 + (0.30 * support_ratio)
+            
+            # Build detailed rationale
+            rationale = self._build_support_rationale(
+                supported_evidence, total_claims, support_ratio
+            )
 
         return ConsistencyAnalysis(
-            backstory_id=character, 
-            verdict="1", 
-            confidence=dynamic_conf, 
-            rationale=rationale_summary
+            backstory_id=character,
+            verdict="1",
+            confidence=confidence,
+            rationale=rationale
         )
+    
+    def _build_contradiction_rationale(self, claim, verification_result, evidence, claim_num, total_claims):
+        """
+        Build detailed rationale for contradictions.
+        """
+        rationale_parts = [
+            f"The narrative evidence contradicts the backstory claim.",
+            f"\nClaim #{claim_num}/{total_claims}: \"{claim[:100]}...\"",
+            f"\nVerification: {verification_result['rationale']}",
+        ]
+        
+        # Add evidence snippets
+        if evidence:
+            rationale_parts.append(f"\nRelevant narrative passages:")
+            for i, chunk in enumerate(evidence[:2], 1):
+                snippet = chunk.text[:150].replace('\n', ' ')
+                rationale_parts.append(f"  [{i}] \"{snippet}...\"")
+        
+        return " ".join(rationale_parts)
+    
+    def _build_support_rationale(self, supported_evidence, total_claims, support_ratio):
+        """
+        Build detailed rationale for consistent backstories.
+        """
+        rationale_parts = [
+            f"Consistent. Verified {len(supported_evidence)}/{total_claims} claims against narrative context."
+        ]
+        
+        # Add top verified claims
+        if supported_evidence:
+            rationale_parts.append("\nKey verified facts:")
+            for i, evidence in enumerate(supported_evidence[:4], 1):
+                claim_snippet = evidence['claim'][:80]
+                rationale_snippet = evidence['rationale'][:120]
+                rationale_parts.append(
+                    f"  {i}. \"{claim_snippet}...\" - {rationale_snippet}..."
+                )
+            
+            if len(supported_evidence) > 4:
+                rationale_parts.append(f"  (+{len(supported_evidence) - 4} additional verified claims)")
+        
+        return " ".join(rationale_parts)
 
     def _verify_claim_with_fallback(self, claim: str, retriever: Retriever,
                                     verifier: ClaimVerifier) -> Dict:

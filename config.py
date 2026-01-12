@@ -35,8 +35,8 @@ Path(DEFAULT_OUTPUT_FILE).parent.mkdir(parents=True, exist_ok=True)
 DEFAULT_DB_PATH.mkdir(parents=True, exist_ok=True)
 
 # Chunking Configuration
-DEFAULT_CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "120"))
-CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "24"))
+DEFAULT_CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "400"))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "80"))
 
 # Embedding Configuration
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "384"))

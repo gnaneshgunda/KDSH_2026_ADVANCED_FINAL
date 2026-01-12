@@ -94,28 +94,42 @@ class IndexManager:
     def _build_book_index(self, book_key, book_file, pkl_path):
         try:
             text = book_file.read_text(encoding="utf-8")
-            chunks = self.chunker.chunk_text(text)
-            embeddings = self.client.embed(chunks)
+            chunk_dicts = self.chunker.chunk_text(text)  # Now returns list of dicts
+            
+            # Extract just the text for embedding
+            chunk_texts = [c['text'] for c in chunk_dicts]
+            embeddings = self.client.embed(chunk_texts)
             
             book_chunks = []
-            for i, chunk_text in enumerate(chunks):
-                # Extract high-value metadata for retrieval filtering
-                entities = self.context_builder.analyze_entities(chunk_text)
-                temporal = self.context_builder.extract_temporal_markers(chunk_text)
+            for i, chunk_dict in enumerate(chunk_dicts):
+                chunk_text = chunk_dict['text']
+                metadata = chunk_dict['metadata']
+                
+                # Use metadata from chunker, enrich with context builder
+                entities = metadata.get('characters', [])
+                temporal = metadata.get('temporal', [])
+                locations = metadata.get('locations', [])
+                
+                # Additional analysis
                 causal = self.context_builder.extract_causal_indicators(chunk_text)
+                sentiment = self.context_builder.analyze_sentiment(chunk_text)
                 
                 meta = ChunkMetadata(
                     text=chunk_text,
                     embedding=np.array(embeddings[i]),
                     chunk_id=f"{book_key}_{i}",
-                    entities=entities, 
+                    entities=entities,
                     temporal_markers=temporal,
                     causal_indicators=causal,
-                    sentiment=self.context_builder.analyze_sentiment(chunk_text)
+                    sentiment=sentiment,
+                    start_pos=chunk_dict['start_pos'],
+                    end_pos=chunk_dict['end_pos'],
+                    locations=locations,
+                    has_dialogue=metadata.get('has_dialogue', False)
                 )
                 book_chunks.append(meta)
                 
-            # PERSISTENCE: Metadata is now baked into the .pkl files in ./db
+            # Save to pkl
             with open(pkl_path, "wb") as f:
                 pickle.dump(book_chunks, f)
             self.corpus[book_key] = book_chunks

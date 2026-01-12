@@ -20,6 +20,8 @@ class ChunkMetadata:
     context_vector: np.ndarray = None
     start_pos: int = 0
     end_pos: int = 0
+    locations: List[str] = field(default_factory=list)
+    has_dialogue: bool = False
 
 
 @dataclass
