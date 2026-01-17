@@ -464,12 +464,12 @@ class AdvancedNarrativeConsistencyRAG:
 
     def _determine_verdict(self, character: str,claim_results: List[Dict]) -> Tuple[str, float, str]:
         """
-         Determine overall verdict based on claim verification results.
+        Determine overall verdict based on claim verification results.
 
-    LOGIC PRINCIPLES:
-    - CONTRADICTED claims prove inconsistency
-    - NOT_MENTIONED claims are neutral but weaken confidence
-    - Too many NOT_MENTIONED → insufficient evidence → UNKNOWN
+        LOGIC PRINCIPLES:
+        - CONTRADICTED claims prove inconsistency
+        - NOT_MENTIONED claims are neutral but weaken confidence
+        - Too many NOT_MENTIONED → insufficient evidence → UNKNOWN
         """
 
         if not claim_results:
@@ -578,7 +578,7 @@ class NarrativePipeline:
             
             if res["verdict"] == "SUPPORTED":
                 verified_points.append(res['rationale'])
-
+                            
             # Step 2: Negation Check (Checking if the opposite is true)
             negation_query = f"Evidence that {character} did NOT {claim}"
             neg_evidence = retriever.retrieve(negation_query, character, top_k=3)
