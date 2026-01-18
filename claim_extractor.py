@@ -85,16 +85,28 @@ Claims:"""
         try:
             response = self.llm.chat(prompt)
             
+            # Check if response is a JSON error from stub
+            if response.strip().startswith('{') and '"error"' in response:
+                logger.warning("Stub fallback detected in claim extraction. Using simple sentence splitting.")
+                # Fallback: extract sentences as claims
+                doc = nlp(backstory)
+                claims = [sent.text.strip() for sent in doc.sents if len(sent.text.split()) > 5]
+                return claims[:12]  # Limit to 12
+            
             # Parse response: split by newlines and clean
             claims = [
                 line.strip()
                 for line in response.split('\n')
-                if line.strip() and not line.strip().startswith(('#', '-', '*'))
+                if line.strip() and not line.strip().startswith(('#', '-', '*', '{', '}'))
             ]
             
             # Filter empty strings and validate claims contain entities
             validated_claims = []
             for claim in claims:
+                # Skip JSON-like strings
+                if claim.startswith(('{', '}')):
+                    continue
+                    
                 if claim and self._validate_claim(claim, persons, dates, locations):
                     validated_claims.append(claim)
             
@@ -103,7 +115,14 @@ Claims:"""
             
         except Exception as e:
             logger.error(f"Error extracting claims: {e}")
-            return []
+            # Fallback: use simple sentence extraction
+            try:
+                doc = nlp(backstory)
+                claims = [sent.text.strip() for sent in doc.sents if len(sent.text.split()) > 5]
+                logger.info(f"Fallback extraction: {len(claims[:12])} claims from sentences")
+                return claims[:12]
+            except:
+                return []
     
     def _validate_claim(self, claim: str, persons: List[str], dates: List[str], locations: List[str]) -> bool:
         """

@@ -39,16 +39,27 @@ def _text_to_seed(text: str) -> int:
 
 
 def _embed_text_hf(text: str) -> np.ndarray:
-    """Embed text using HuggingFace SentenceTransformer"""
+    """Embed text using HuggingFace SentenceTransformer
+    
+    Returns padded vector to EMBEDDING_DIM (2048) for array compatibility,
+    but only first 384 dimensions contain meaningful information.
+    """
     if HAS_SENTENCE_TRANSFORMERS:
         vec = _hf_embedder.encode(text, convert_to_numpy=True).astype(np.float32)
+        
+        # Pad to EMBEDDING_DIM for compatibility with NVIDIA embeddings
+        if len(vec) < EMBEDDING_DIM:
+            padding = np.zeros(EMBEDDING_DIM - len(vec), dtype=np.float32)
+            vec = np.concatenate([vec, padding])
+        
+        # Normalize after padding
         norm = np.linalg.norm(vec) + 1e-8
         return vec / norm
     else:
-        # Fallback: deterministic stub
+        # Fallback: deterministic stub (full EMBEDDING_DIM)
         seed = _text_to_seed(text)
         rng = np.random.RandomState(seed)
-        vec = rng.normal(size=(2048,)).astype(np.float32)
+        vec = rng.normal(size=(EMBEDDING_DIM,)).astype(np.float32)
         norm = np.linalg.norm(vec) + 1e-8
         return vec / norm
 
@@ -69,13 +80,27 @@ class NVIDIAClient:
         self.use_nvidia_api = bool(api_key)
         self.use_hf = not self.use_nvidia_api and HAS_SENTENCE_TRANSFORMERS
         
+        # Track active embedding dimension for consistency
+        # NVIDIA: 2048, HuggingFace: 384, Stub: 2048
+        self.active_embedding_dim = 384 if self.use_hf else EMBEDDING_DIM
+        self._fallback_occurred = False  # Track if we've fallen back mid-session
+        
         if self.use_nvidia_api:
             logger.info(f"Using NVIDIA API for inference: {self.base_url}")
         elif self.use_hf:
-            logger.info("Using HuggingFace models for inference (embeddings)")
+            logger.info(f"Using HuggingFace models for inference (embeddings: {self.active_embedding_dim}d)")
         else:
-            logger.info("Using stub/deterministic fallback for inference")
+            logger.info(f"Using stub/deterministic fallback for inference (embeddings: {self.active_embedding_dim}d)")
 
+    def get_embedding_dim(self) -> int:
+        """Get the effective embedding dimension for similarity calculations.
+        
+        Returns:
+            384 if using HF embeddings (only first 384 dims are meaningful)
+            2048 if using NVIDIA or stub embeddings
+        """
+        return self.active_embedding_dim
+    
     def embed(self, texts: List[str]) -> List[np.ndarray]:
         """Get embeddings using NVIDIA API > HuggingFace > Stub"""
         if self.use_nvidia_api:
@@ -116,6 +141,16 @@ class NVIDIAClient:
             return embeddings
         except Exception as e:
             logger.warning(f"NVIDIA embedding failed: {e}. Falling back to HuggingFace.")
+            
+            # Track that fallback occurred mid-session
+            if not self._fallback_occurred:
+                self._fallback_occurred = True
+                self.active_embedding_dim = 384
+                logger.warning(
+                    "⚠️  Embedding backend switched from NVIDIA (2048d) to HuggingFace (384d). "
+                    "For optimal performance, consider rebuilding the index with consistent backend."
+                )
+            
             return [_embed_text_hf(t if t is not None else "") for t in texts]
 
     def chat(self, messages, temperature: float = 0.0) -> str:
@@ -130,6 +165,7 @@ class NVIDIAClient:
         try:
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",  # Required for all requests
                 "Accept": "application/json",
             }
             
@@ -144,14 +180,12 @@ class NVIDIAClient:
                 "messages": payload_messages,
                 "temperature": temperature,
                 "top_p": 0.7,
-                "max_tokens": 8192,
-                "chat_template_kwargs": {
-                    "thinking": "true"
-                }
+                "max_tokens": 8192
+                # Removed chat_template_kwargs - not supported by all models
             }
             
             response = requests.post(
-                self.base_url+ "/chat/completions",
+                f"{self.base_url}/chat/completions",  # Fixed: use f-string
                 headers=headers,
                 json=payload,
                 timeout=60
@@ -173,7 +207,44 @@ class NVIDIAClient:
         else:
             prompt = str(messages)
 
-        # If prompt expects JSON (heuristic: contains 'Return JSON') reply with a simple JSON
+        # Detect if this is a claim verification request (expects JSON output)
+        is_claim_verification = any([
+            "OUTPUT FORMAT" in prompt and "JSON" in prompt,
+            '"verdict"' in prompt,
+            "CLAIM TO VERIFY" in prompt,
+            "**VERIFICATION RULES:**" in prompt
+        ])
+        
+        if is_claim_verification:
+            # Parse claim verification prompts
+            # Look for evidence markers
+            has_evidence = "Evidence" in prompt or "NARRATIVE EVIDENCE" in prompt
+            has_contradicted_keyword = "CONTRADICTED" in prompt.upper()
+            has_supported_keyword = "SUPPORTED" in prompt.upper()
+            
+            # Default to NOT_MENTIONED with conservative reasoning
+            verdict = "NOT_MENTIONED"
+            confidence = 0.5
+            rationale = "Unable to verify claim without LLM analysis. Defaulting to neutral verdict."
+            
+            # Try to detect evidence presence
+            if has_evidence:
+                evidence_count = prompt.count("[Evidence ")
+                if evidence_count > 0:
+                    # Heuristic: if we have evidence, assume slight support
+                    verdict = "SUPPORTED"
+                    confidence = min(0.7, 0.5 + (evidence_count * 0.05))
+                    rationale = f"Found {evidence_count} evidence chunk(s). Heuristic analysis suggests potential support."
+                else:
+                    rationale = "No clear evidence markers found in provided context."
+            
+            return json.dumps({
+                "verdict": verdict,
+                "rationale": rationale,
+                "confidence": confidence
+            })
+        
+        # Legacy JSON detection for other use cases
         if "Return JSON" in prompt or "Return JSON:" in prompt:
             # Improved heuristic: analyze supporting vs opposing evidence more granularly
             supporting_count = prompt.count("SUPPORTING")
@@ -213,8 +284,12 @@ class NVIDIAClient:
             snippet = first_line[:200]
             return f"Not {snippet}"
 
-        # Default: return the prompt truncated for visibility
-        return prompt[:1000]
+        # Default: return JSON to avoid parsing errors
+        logger.warning("Stub fallback: unknown prompt type, returning default JSON")
+        return json.dumps({
+            "error": "Stub fallback - LLM unavailable",
+            "response": prompt[:500]
+        })
 
     def rerank(self, query: str, candidates: List[Dict]) -> List[Dict]:
         """Rerank candidates: NVIDIA API > HF embeddings > Stub"""

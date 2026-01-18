@@ -64,14 +64,48 @@ class ClaimVerifier:
 """
         try:
             response = self.llm.chat(prompt)
-            json_str = response.strip().replace("```json", "").replace("```", "").strip()
-            result = json.loads(json_str)
             
-            # Ensure rationale is detailed
-            if 'rationale' not in result or len(result['rationale']) < 20:
+            # Handle empty response
+            if not response or not response.strip():
+                logger.warning("Empty response from LLM")
+                return {
+                    "verdict": "NOT_MENTIONED", 
+                    "rationale": "LLM returned empty response", 
+                    "confidence": 0.5
+                }
+            
+            # Clean response - remove markdown code blocks if present
+            json_str = response.strip().replace("```json", "").replace("```", "").strip()
+            
+            # Try to parse JSON
+            try:
+                result = json.loads(json_str)
+            except json.JSONDecodeError as je:
+                logger.error(f"JSON decode error: {je}. Response was: {json_str[:200]}")
+                # Return safe default
+                return {
+                    "verdict": "NOT_MENTIONED",
+                    "rationale": f"Unable to parse LLM response. Raw output: {json_str[:100]}",
+                    "confidence": 0.4
+                }
+            
+            # Validate required fields
+            if "verdict" not in result:
+                logger.warning(f"Missing 'verdict' field in response: {result}")
+                result["verdict"] = "NOT_MENTIONED"
+            
+            if "rationale" not in result or len(result.get("rationale", "")) < 20:
                 result['rationale'] = f"Verdict: {result.get('verdict', 'UNKNOWN')}. Analysis incomplete."
             
+            if "confidence" not in result:
+                result["confidence"] = 0.5
+            
             return result
+            
         except Exception as e:
             logger.error(f"Verification error: {e}")
-            return {"verdict": "NOT_MENTIONED", "rationale": f"Analysis error: {str(e)}", "confidence": 0.4}
+            return {
+                "verdict": "NOT_MENTIONED", 
+                "rationale": f"Analysis error: {str(e)}", 
+                "confidence": 0.4
+            }

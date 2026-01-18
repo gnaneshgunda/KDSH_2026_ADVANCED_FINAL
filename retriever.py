@@ -55,7 +55,21 @@ class HybridRetriever:
         # STEP 2: Semantic similarity ranking
         pool_embeddings = np.array([c.embedding for c in search_pool])
         query_emb = np.array(self.client.embed([query])[0])
-        sims = cosine_similarity([query_emb], pool_embeddings)[0]
+        
+        # Get effective dimension for similarity calculation
+        # If using HF embeddings (384d), only use first 384 dims to avoid zero-padding distortion
+        effective_dim = self.client.get_embedding_dim()
+        
+        # Truncate embeddings to effective dimension for accurate similarity
+        if effective_dim < len(query_emb):
+            query_emb_trunc = query_emb[:effective_dim]
+            pool_embeddings_trunc = pool_embeddings[:, :effective_dim]
+            logger.debug(f"Using first {effective_dim} dimensions for similarity calculation")
+        else:
+            query_emb_trunc = query_emb
+            pool_embeddings_trunc = pool_embeddings
+        
+        sims = cosine_similarity([query_emb_trunc], pool_embeddings_trunc)[0]
         
         # Get top 2*top_k for reranking
         initial_k = min(top_k * 2, len(search_pool))
