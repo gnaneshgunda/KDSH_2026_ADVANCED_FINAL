@@ -285,319 +285,225 @@ class AdvancedNarrativeConsistencyRAG:
         return " ".join(parts).strip()
 
 
-    def analyze_backstory(self, book_name, character, backstory_text, narrative_chunks):
-        """Analyze backstory with detailed rationale generation."""
-        # Extract claims
+    def analyze_backstory(self, book_name, character, backstory_text, narrative_chunks,
+                          use_rerank=True, top_k=5, context_window=1,
+                          enable_fallback=True, enable_negation=False):
+        """
+        Analyze backstory with detailed rationale generation, weighted voting, and trace logging.
+        """
+        start_time = time.time()
+        
+        # Extract claims (limited to 12)
         claims = self.claim_extractor.extract_claims(backstory_text)[:12]
+        claim_categories = getattr(self.claim_extractor, 'last_claim_categories', {})
+        
         retriever = HybridRetriever(narrative_chunks, self.client)
         
         results = []
-        supported_evidence = []
-        contradicted_evidence = []
+        claim_results_for_ui = []
+        per_claim_traces = []
+
+        category_weights = {
+            "IDENTITY": 2.0,
+            "TEMPORAL": 1.5,
+            "SPATIAL": 1.5,
+            "RELATIONAL": 1.5,
+            "CAUSAL": 1.0,
+        }
+
+        weighted_support = 0.0
+        weighted_contradict = 0.0
+        total_weight = 0.0
 
         for i, claim in enumerate(claims, 1):
-            # Retrieve with character filtering and reranking
-            evidence = retriever.retrieve(
-                claim, 
-                character_name=character, 
-                top_k=5,
-                context_window=1,
-                use_rerank=True
-            )
+            claim_start = time.time()
+            category = claim_categories.get(claim, "IDENTITY")
+            weight = category_weights.get(category, 1.0)
+            total_weight += weight
             
-            # Verify claim
-            res = self.claim_verifier.verify(claim, [c.text for c in evidence])
-            
-            # SINGLE-STRIKE: If one claim is contradicted, return immediately
-            if res["verdict"] == "CONTRADICTED":
-                # Build detailed contradiction rationale
-                rationale = self._build_contradiction_rationale(
-                    claim, res, evidence, i, len(claims)
+            # Verify claim with or without fallback
+            if enable_fallback:
+                res, evidence = self._verify_claim_with_fallback(
+                    claim, retriever, self.claim_verifier,
+                    character_name=character, initial_top_k=top_k,
+                    context_window=context_window, use_rerank=use_rerank
                 )
-                return ConsistencyAnalysis(
-                    backstory_id=character,
-                    verdict="0",
-                    confidence=min(0.95, res.get("confidence", 0.9)),
-                    rationale=rationale
+            else:
+                evidence = retriever.retrieve(
+                    claim, 
+                    character_name=character, 
+                    top_k=top_k,
+                    context_window=context_window,
+                    use_rerank=use_rerank
                 )
+                res = self.claim_verifier.verify(claim, [c.text for c in evidence])
+
+            # Optional Negation Check (Checking if evidence directly contradicts)
+            if enable_negation and res.get("verdict") != "CONTRADICTED":
+                negation_query = f"Evidence that {character} did not {claim}"
+                neg_evidence = retriever.retrieve(
+                    negation_query, 
+                    character_name=character, 
+                    top_k=3,
+                    context_window=context_window,
+                    use_rerank=use_rerank
+                )
+                neg_res = self.claim_verifier.verify(claim, [c.text for c in neg_evidence])
+                if neg_res.get("verdict") == "CONTRADICTED":
+                    res = neg_res
+                    evidence = neg_evidence
+
+            verdict = res.get("verdict", "NOT_MENTIONED")
+            confidence = res.get("confidence", 0.5)
             
-            # Collect evidence for supported claims
-            if res["verdict"] == "SUPPORTED":
-                supported_evidence.append({
-                    'claim': claim,
-                    'rationale': res['rationale'],
-                    'confidence': res.get('confidence', 0.8),
-                    'evidence_count': len(evidence)
-                })
+            if verdict == "SUPPORTED":
+                weighted_support += weight * confidence
+            elif verdict == "CONTRADICTED":
+                weighted_contradict += weight * confidence
+
+            claim_time = (time.time() - claim_start) * 1000
+
+            claim_results_for_ui.append({
+                "claim": claim,
+                "category": category,
+                "verdict": verdict,
+                "rationale": res.get("rationale", ""),
+                "confidence": confidence,
+                "evidence": [c.text for c in evidence]
+            })
+            
+            per_claim_traces.append({
+                "claim": claim,
+                "category": category,
+                "chunks_retrieved": len(evidence),
+                "verification_verdict": verdict,
+                "verification_confidence": confidence,
+                "time_ms": claim_time
+            })
             
             results.append(res)
 
-        # Calculate dynamic confidence
-        supported_count = len(supported_evidence)
-        total_claims = len(results)
-        
-        if supported_count == 0:
-            # No explicit support, but no contradictions
-            confidence = 0.55
-            rationale = f"Consistent. Verified {total_claims} claims against narrative context. No contradictions found, though evidence was largely implicit."
+        # Calculate stats for the final analysis
+        num_supported = sum(1 for r in claim_results_for_ui if r["verdict"] == "SUPPORTED")
+        num_contradicted = sum(1 for r in claim_results_for_ui if r["verdict"] == "CONTRADICTED")
+        num_unknown = sum(1 for r in claim_results_for_ui if r["verdict"] in ["NOT_MENTIONED", "UNKNOWN"])
+
+        # Weighted voting verdict
+        CONTRADICTION_THRESHOLD = 1.2
+        if weighted_contradict >= CONTRADICTION_THRESHOLD:
+            final_verdict = "0"  # Inconsistent
+            final_confidence = min(0.98, 0.7 + (weighted_contradict / max(total_weight, 1.0)) * 0.3)
+            rationale = self._build_contradiction_rationale(claim_results_for_ui)
+        elif weighted_support > 0:
+            final_verdict = "1"  # Consistent
+            final_confidence = min(0.95, 0.6 + (weighted_support / max(total_weight, 1.0)) * 0.4)
+            rationale = self._build_support_rationale(claim_results_for_ui, len(claims))
         else:
-            # Has explicit support
-            support_ratio = supported_count / total_claims
-            confidence = 0.65 + (0.30 * support_ratio)
+            final_verdict = "unknown"
+            final_confidence = 0.5
+            rationale = "No claims could be explicitly verified against the narrative. The text is silent on these points."
             
-            # Build detailed rationale
-            rationale = self._build_support_rationale(
-                supported_evidence, total_claims, support_ratio
-            )
+        total_time_ms = (time.time() - start_time) * 1000
+        
+        trace = {
+            "claims_extracted": claims,
+            "per_claim_traces": per_claim_traces,
+            "total_time_ms": total_time_ms,
+            "final_verdict": final_verdict,
+            "final_confidence": final_confidence
+        }
 
         return ConsistencyAnalysis(
             backstory_id=character,
-            verdict="1",
-            confidence=confidence,
-            rationale=rationale
+            verdict=final_verdict,
+            confidence=final_confidence,
+            rationale=rationale,
+            claim_results=claim_results_for_ui,
+            num_supported_claims=num_supported,
+            num_contradicted_claims=num_contradicted,
+            num_unknown_claims=num_unknown,
+            trace=trace
         )
     
-    def _build_contradiction_rationale(self, claim, verification_result, evidence, claim_num, total_claims):
-        """
-        Build detailed rationale for contradictions.
-        """
+    def _build_contradiction_rationale(self, claim_results):
+        """Build detailed rationale for contradictions."""
+        contradicted = [c for c in claim_results if c["verdict"] == "CONTRADICTED"]
         rationale_parts = [
-            f"The narrative evidence contradicts the backstory claim.",
-            f"\nClaim #{claim_num}/{total_claims}: \"{claim[:100]}...\"",
-            f"\nVerification: {verification_result['rationale']}",
+            f"INCONSISTENT: Found {len(contradicted)} contradictory claims against narrative evidence."
         ]
         
-        # Add evidence snippets
-        if evidence:
-            rationale_parts.append(f"\nRelevant narrative passages:")
-            for i, chunk in enumerate(evidence[:2], 1):
-                snippet = chunk.text[:150].replace('\n', ' ')
-                rationale_parts.append(f"  [{i}] \"{snippet}...\"")
-        
+        for i, c in enumerate(contradicted[:2], 1):
+            rationale_parts.append(f"\nConflict {i}: {c['claim'][:80]}...")
+            rationale_parts.append(f"Reasoning: {c['rationale']}")
+            
+        if len(contradicted) > 2:
+            rationale_parts.append(f"\n(+{len(contradicted) - 2} more contradictions)")
+            
         return " ".join(rationale_parts)
     
-    def _build_support_rationale(self, supported_evidence, total_claims, support_ratio):
-        """
-        Build detailed rationale for consistent backstories.
-        """
+    def _build_support_rationale(self, claim_results, total_claims):
+        """Build detailed rationale for consistent backstories."""
+        supported = [c for c in claim_results if c["verdict"] == "SUPPORTED"]
         rationale_parts = [
-            f"Consistent. Verified {len(supported_evidence)}/{total_claims} claims against narrative context."
+            f"CONSISTENT: Verified {len(supported)}/{total_claims} claims explicitly in the source narrative."
         ]
         
-        # Add top verified claims
-        if supported_evidence:
-            rationale_parts.append("\nKey verified facts:")
-            for i, evidence in enumerate(supported_evidence[:4], 1):
-                claim_snippet = evidence['claim'][:80]
-                rationale_snippet = evidence['rationale'][:120]
-                rationale_parts.append(
-                    f"  {i}. \"{claim_snippet}...\" - {rationale_snippet}..."
-                )
+        for i, c in enumerate(supported[:3], 1):
+            rationale_parts.append(f"\n{i}. {c['claim'][:60]}... -> {c['rationale'][:80]}...")
             
-            if len(supported_evidence) > 4:
-                rationale_parts.append(f"  (+{len(supported_evidence) - 4} additional verified claims)")
-        
+        if len(supported) > 3:
+            rationale_parts.append(f"\n(+{len(supported) - 3} more verified claims)")
+            
         return " ".join(rationale_parts)
 
-    def _verify_claim_with_fallback(self, claim: str, retriever: Retriever,
-                                    verifier: ClaimVerifier) -> Dict:
+    def _verify_claim_with_fallback(self, claim: str, retriever,
+                                    verifier, character_name: str = None,
+                                    initial_top_k: int = 5, context_window: int = 1,
+                                    use_rerank: bool = True) -> Tuple[Dict, List]:
         """
         Verify a claim with fallback retrieval loop.
         
         If verifier returns UNKNOWN, increase retrieved chunks and retry.
         Max rounds: MAX_RETRIEVAL_ROUNDS
         Max top_k: MAX_TOP_K
-        
-        Args:
-            claim: Claim to verify
-            retriever: Retriever instance
-            verifier: ClaimVerifier instance
-            
-        Returns:
-            Dict with verdict, explanation, confidence
         """
-        if not FALLBACK_ENABLED:
-            # Single retrieval without fallback
-            chunks = retriever.retrieve(claim, top_k=DEFAULT_TOP_K)
-            evidence = [c.text for c in chunks]
-            return verifier.verify(claim, evidence)
-
-
-        # Fallback loop enabled
-        top_k = DEFAULT_TOP_K
+        top_k = initial_top_k
         rounds = 0
         max_rounds = MAX_RETRIEVAL_ROUNDS
-
+        
+        chunks = []
+        result = {"verdict": "NOT_MENTIONED", "rationale": "No evidence retrieved", "confidence": 0.5}
 
         while rounds < max_rounds and top_k <= MAX_TOP_K:
             logger.debug(f"    Retrieval round {rounds + 1}: top_k={top_k}")
             
             # Retrieve evidence
-            chunks = retriever.retrieve(claim, top_k=top_k)
+            chunks = retriever.retrieve(
+                claim, 
+                character_name=character_name, 
+                top_k=top_k,
+                context_window=context_window,
+                use_rerank=use_rerank
+            )
             evidence = [c.text for c in chunks]
 
+            if not evidence:
+                break
 
             # Verify claim
             result = verifier.verify(claim, evidence)
 
-
             # Check if verdict is conclusive
-            if result["verdict"].lower() in ["supported", "contradicted", "not_mentioned"]:
+            if result.get("verdict", "").upper() in ["SUPPORTED", "CONTRADICTED", "NOT_MENTIONED"]:
                 logger.debug(f"    Final verdict: {result['verdict']}")
-                return result
-
+                return result, chunks
 
             # Not conclusive, increase top_k and retry
             logger.debug(f"    Verdict inconclusive, expanding retrieval...")
             top_k += RETRIEVAL_STEP
             rounds += 1
 
-
-        # Exhausted retrieval rounds
-        logger.debug(f"    Max retrieval rounds ({max_rounds}) reached")
-        return {
-            "verdict": "not_mentioned",
-            "explanation": "Claim not conclusively addressed in narrative after exhaustive search",
-            "confidence": 0.4
-        }
-
-
-    def _determine_verdict(self, character: str,claim_results: List[Dict]) -> Tuple[str, float, str]:
-        """
-        Determine overall verdict based on claim verification results.
-
-        LOGIC PRINCIPLES:
-        - CONTRADICTED claims prove inconsistency
-        - NOT_MENTIONED claims are neutral but weaken confidence
-        - Too many NOT_MENTIONED → insufficient evidence → UNKNOWN
-        """
-
-        if not claim_results:
-            return "unknown", 0.5, "No claims to analyze"
-
-    # Count verdict types
-        supported_count = sum(1 for r in claim_results if r["verdict"].lower() == "supported")
-        contradicted_count = sum(1 for r in claim_results if r["verdict"].lower() == "contradicted")
-        not_mentioned_count = sum(1 for r in claim_results if r["verdict"].lower() == "not_mentioned")
-        unknown_count = sum(1 for r in claim_results if r["verdict"].lower() == "unknown")
-
-        total_claims = len(claim_results)
-        not_mentioned_ratio = not_mentioned_count / total_claims
-
-        logger.info(
-        f"  Claim summary: {supported_count} supported, "
-        f"{contradicted_count} contradicted, "
-        f"{not_mentioned_count} not mentioned, "
-        f"{unknown_count} unknown"
-    )
-
-    # ===== FINAL VERDICT LOGIC =====
-
-    # 1️⃣ Any contradiction → contradicted
-        if contradicted_count > 0:
-            verdict = "contradicted"
-            confidence = min(
-            0.95,
-            0.55 + (contradicted_count / total_claims) * 0.45
-        )
-            rationale = (
-            f"Backstory contradicts narrative. "
-            f"Found {contradicted_count} contradicting claim(s) out of {total_claims}. "
-            f"({supported_count} supported, {not_mentioned_count} not mentioned)"
-        )
-            logger.info(f"  Overall verdict: CONTRADICTED (confidence: {confidence:.2f})")
-
-    # 2️⃣ All claims supported → consistent
-        elif supported_count == total_claims:
-            verdict = "consistent"
-            confidence = 0.95
-            rationale = (
-            f"Backstory is fully consistent with narrative. "
-            f"All {supported_count} claims are supported."
-        )
-            logger.info(f"  Overall verdict: CONSISTENT (confidence: {confidence:.2f})")
-
-    # 3️⃣ Too much missing evidence → unknown
-        elif not_mentioned_ratio >= 0.6:
-            verdict = "unknown"
-            confidence = max(0.40, 0.55 - not_mentioned_ratio * 0.15)
-            rationale = (
-            f"Insufficient narrative evidence to verify backstory. "
-            f"{supported_count} claims supported, "
-            f"{not_mentioned_count} not mentioned, "
-            f"{contradicted_count} contradicted."
-        )
-            logger.info(f"  Overall verdict: UNKNOWN (confidence: {confidence:.2f})")
-
-    # 4️⃣ Mixed but no contradictions → consistent (low confidence)
-        else:
-            verdict = "consistent"
-            confidence = max(
-            0.55,
-            0.80 - not_mentioned_ratio * 0.30
-        )
-            rationale = (
-            f"Backstory appears consistent with narrative. "
-            f"{supported_count} claims supported, "
-            f"{not_mentioned_count} not mentioned "
-            f"(no contradictions found)."
-        )
-            logger.info(f"  Overall verdict: CONSISTENT (confidence: {confidence:.2f})")
-
-        return verdict, confidence, rationale
-
-
-
-class NarrativePipeline:
-    def __init__(self, index_manager, claim_extractor, claim_verifier):
-        self.index_manager = index_manager
-        self.extractor = claim_extractor
-        self.verifier = claim_verifier
-
-    def analyze_record(self, record_id, book_name, character, backstory):
-        chunks = self.index_manager.get_book_chunks(book_name)
-        
-        if not chunks:
-            return ConsistencyAnalysis(record_id, "1", 0.5, "Narrative context unavailable; assuming consistency.")
-
-        retriever = HybridRetriever(chunks, self.index_manager.client)
-        claims = self.extractor.extract_claims(backstory)
-        
-        verified_points = []
-        
-        for claim in claims:
-            # Step 1: Standard Retrieval
-            evidence = retriever.retrieve(claim, character, top_k=5)
-            res = self.verifier.verify(claim, [c.text for c in evidence])
-            
-            if res["verdict"] == "CONTRADICTED":
-                return ConsistencyAnalysis(
-                    record_id, "0", 0.95, 
-                    f"Contradiction: {res['rationale']}"
-                )
-            
-            if res["verdict"] == "SUPPORTED":
-                verified_points.append(res['rationale'])
-                            
-            # Step 2: Negation Check (Checking if the opposite is true)
-            negation_query = f"Evidence that {character} did NOT {claim}"
-            neg_evidence = retriever.retrieve(negation_query, character, top_k=3)
-            neg_res = self.verifier.verify(claim, [c.text for c in neg_evidence])
-            
-            if neg_res["verdict"] == "CONTRADICTED":
-                return ConsistencyAnalysis(
-                    record_id, "0", 0.95, 
-                    f"Causal conflict: {neg_res['rationale']}"
-                )
-
-        # Build consistent rationale
-        if verified_points:
-            # Join top verification rationales for the CSV output
-            final_rationale = "Consistent. Evidence Found: " + " | ".join(verified_points[:2])
-        else:
-            final_rationale = "Consistent. No logical contradictions detected in the narrative flow."
-
-        return ConsistencyAnalysis(record_id, "1", 0.8, final_rationale)
+        return result, chunks
 
 
 def main():

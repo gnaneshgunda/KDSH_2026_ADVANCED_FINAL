@@ -79,7 +79,7 @@ try:
     logger.info("Loaded spaCy model: en_core_web_sm")
 except OSError:
     logger.warning("spaCy model 'en_core_web_sm' not found. Downloading...")
-    os.system("python -m spacy download en_core_web_sm")
+    os.system("python3 -m spacy download en_core_web_sm")
     nlp = spacy.load("en_core_web_sm")
 
 # NLTK Setup

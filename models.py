@@ -56,3 +56,4 @@ class ConsistencyAnalysis:
     num_supported_claims: int = 0
     num_contradicted_claims: int = 0
     num_unknown_claims: int = 0
+    trace: Dict = field(default_factory=dict)

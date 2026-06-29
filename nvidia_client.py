@@ -1,6 +1,6 @@
 """
-NVIDIA NIM + HuggingFace Client for embeddings, chat, and reranking
-Uses real NVIDIA API when available, falls back to HuggingFace Transformers
+NVIDIA NIM Client for embeddings, chat, and reranking
+Uses real NVIDIA API when available, falls back to sentence-transformers (embeddings) + heuristic stub (chat)
 """
 
 from typing import List, Dict
@@ -23,14 +23,7 @@ except ImportError:
     HAS_SENTENCE_TRANSFORMERS = False
     logger.warning("SentenceTransformer not installed. Install with: pip install sentence-transformers")
 
-try:
-    from transformers import pipeline
-    HAS_HF_PIPELINE = True
-    _hf_chat_pipeline = pipeline("text-generation", model="gpt2")
-    logger.info("Loaded HuggingFace text-generation pipeline")
-except ImportError:
-    HAS_HF_PIPELINE = False
-    logger.warning("Transformers not installed. Install with: pip install transformers")
+
 
 
 def _text_to_seed(text: str) -> int:
